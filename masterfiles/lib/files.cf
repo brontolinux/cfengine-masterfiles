@@ -48,14 +48,14 @@
 ###################################################
 
 bundle common files_common
-# @ignore
+# @brief Enumerate policy files used by this policy file for inclusion to inputs
 {
   vars:
       "inputs" slist => { "$(this.promise_dirname)/common.cf" };
 }
 
 body file control
-# @ignore
+# @brief Include policy files used by this policy file as part of inputs
 {
       inputs => { @(files_common.inputs) };
 }
@@ -292,6 +292,41 @@ bundle edit_line replace_line_end(start,end)
       edit_field => line("(^|\s)$(start)\s*", "2", "$(end)","set");
 }
 
+bundle edit_line replace_uncommented_substrings( _comment, _find, _replace )
+# @brief Replace all occurrences of `_find` with `_replace` on lines that do not follow a `_comment`
+# @param _comment Sequence of characters, each indicating the start of a comment.
+# @param _find String matching substring to replace
+# @param _replace String to substitute `_find` with
+#
+# **Example:**
+#
+# ```cf3
+# bundle agent example_replace_uncommented_substrings
+# {
+#   files:
+#     "/tmp/file.txt"
+#       edit_line => replace_uncommented_substrings( "#", "ME", "YOU");
+# }
+# ```
+#
+# **Notes:**
+#
+# * Only single character comments are supported as `_comment` is used in the PCRE character group (`[^...]`).
+# * `-` in `_comment` is interpreted as a range unless it's used as the first or last character. For example, setting `_comment` to `0-9` means any digit starts a comment.
+#
+# **History:**
+#
+# * Introduced 3.17.0, 3.15.3
+{
+  vars:
+      "_reg_match_uncommented_lines_containing_find"
+        string => "^([^$(_comment)]*)\Q$(_find)\E(.*$)";
+
+  replace_patterns:
+    "$(_reg_match_uncommented_lines_containing_find)"
+      replace_with => text_between_match1_and_match2( $(_replace) );
+}
+
 ##
 
 bundle edit_line append_to_line_end(start,end)
@@ -412,28 +447,6 @@ bundle edit_line manage_variable_values_ini(tab, sectionName)
   vars:
       "index" slist => getindices("$(tab)[$(sectionName)]");
 
-      # Be careful if the index string contains funny chars
-      "cindex[$(index)]" string => canonify("$(index)");
-
-  classes:
-      "edit_$(cindex[$(index)])"     not => strcmp("$($(tab)[$(sectionName)][$(index)])","dontchange"),
-      comment => "Create conditions to make changes";
-
-  field_edits:
-
-      # If the line is there, but commented out, first uncomment it
-      "#+\s*$(index)\s*=.*"
-      select_region => INI_section(escape("$(sectionName)")),
-      edit_field => col("=","1","$(index)","set"),
-      ifvarclass => "edit_$(cindex[$(index)])";
-
-      # match a line starting like the key something
-      "$(index)\s*=.*"
-      edit_field => col("=","2","$($(tab)[$(sectionName)][$(index)])","set"),
-      select_region => INI_section(escape("$(sectionName)")),
-      classes => results("bundle", "manage_variable_values_ini_not_$(cindex[$(index)])"),
-      ifvarclass => "edit_$(cindex[$(index)])";
-
   delete_lines:
       ".*"
       select_region => INI_section(escape("$(sectionName)")),
@@ -445,9 +458,7 @@ bundle edit_line manage_variable_values_ini(tab, sectionName)
       comment => "Insert lines";
 
       "$(index)=$($(tab)[$(sectionName)][$(index)])"
-      select_region => INI_section(escape("$(sectionName)")),
-        ifvarclass => "!(manage_variable_values_ini_not_$(cindex[$(index)])_kept|manage_variable_values_ini_not_$(cindex[$(index)])_repaired).edit_$(cindex[$(index)])";
-
+      select_region => INI_section(escape("$(sectionName)"));
 }
 
 ##
@@ -898,7 +909,6 @@ bundle edit_line set_config_values_matching(v,pat)
 ##
 
 bundle edit_line maintain_key_values(v,sep)
-# @ignore
 # @brief Sets the RHS of configuration items with an giving separator
 #
 # Contributed by David Lee
@@ -1103,15 +1113,87 @@ bundle edit_line converge(marker, lines)
 #
 # @param marker The marker (not a regular expression; will be escaped)
 # @param lines The lines to insert; all must contain `marker`
+#
+# **Example:**
+#
+# ```cf3
+# bundle agent pam_d_su_include
+# #@brief Ensure /etc/pam.d/su has includes configured properly
+# {
+#   files:
+#     ubuntu::
+#       "/etc/pam.d/su"
+#         edit_line => converge( "@include", "@include common-auth
+# @include common-account
+# @include common-session");
+# }
+# ```
+#
+# **History:**
+#
+# * Introduced in 3.6.0
 {
   vars:
       "regex" string => escape($(marker));
 
   delete_lines:
-      "$(regex)" comment => "Delete lines matching the marker";
+      ".*$(regex).*" comment => "Delete lines matching the marker";
   insert_lines:
       "$(lines)" comment => "Insert the given lines";
 }
+
+bundle edit_line converge_prepend(marker, lines)
+# @brief Converge `lines` marked with `marker` to start of content.
+#
+# Any content marked with `marker` is removed, then `lines` are
+# inserted at *start* of content.  Every `line` should contain `marker`.
+#
+# This is helpful for files where order matters, like `pam.d/common-auth`,
+# and you want the content at the top. If you want to maintain the order
+# of multiple lines, pass one item with a newline in it like this:
+#
+# **Example:**
+#
+# ```cf3
+# files:
+#   "/etc/pam.conf"
+#     edit_line => converge_prepend("session", "session required pam_loginuid.so
+#session required pam_env.so
+#session required pam_env.so envfile=/etc/default/locale
+#session required pam_limits.so");
+# ```
+#
+# @param marker The marker (not a regular expression; will be escaped)
+# @param lines The lines to insert; all must contain `marker`
+#
+# **Example:**
+#
+# ```cf3
+# bundle agent pam_d_su_session
+# #@brief Ensure /etc/pam.d/su has session configured properly
+# {
+#   files:
+#     ubuntu::
+#       "/etc/pam.d/su"
+#         edit_line => converge_prepend( "session", "session       required   pam_env.so readenv=1 envfile=/etc/default/locale
+# session    optional   pam_mail.so nopen
+# session    required   pam_limits.so" );
+# }
+# ```
+#
+# **History:**
+#
+# * Introduced in 3.17.0, 3.15.3, 3.12.6
+{
+  vars:
+      "regex" string => escape($(marker));
+
+  delete_lines:
+      ".*$(regex).*" comment => "Delete lines matching the marker";
+  insert_lines:
+      "$(lines)" location => start, comment => "Insert the given lines";
+}
+
 
 bundle edit_line fstab_option_editor(method, mount, option)
 # @brief Add or remove `/etc/fstab` options for a mount
@@ -1217,6 +1299,14 @@ body edit_field line(split,col,newval,method)
 }
 
 ##
+
+body replace_with text_between_match1_and_match2( _text )
+# @brief Replace matched line with substituted string
+# @param _text String to substitute between first and second match
+{
+        replace_value => "$(match.1)$(_text)$(match.2)";
+        occurrences => "all";
+}
 
 body replace_with value(x)
 # @brief Replace matching lines

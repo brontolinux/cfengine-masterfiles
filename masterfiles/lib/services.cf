@@ -48,7 +48,7 @@
 ###################################################
 
 bundle common services_common
-# @ignore
+# @brief Enumerate policy files used by this policy file for inclusion to inputs
 {
   vars:
       "inputs" slist => { "$(this.promise_dirname)/common.cf",
@@ -56,7 +56,7 @@ bundle common services_common
 }
 
 body file control
-# @ignore
+# @brief Include policy files used by this policy file as part of inputs
 {
       inputs => { @(services_common.inputs) };
 }
@@ -120,7 +120,7 @@ body service_method standard_services
 #       service_method => standard_services;
 # ```
 {
-        service_bundle => standard_services( $(this.promiser), $(this.service_policy) );
+        service_bundle => default:standard_services( $(this.promiser), $(this.service_policy) );
 }
 
 ##
@@ -129,7 +129,7 @@ bundle agent standard_services(service,state)
 # @brief Standard services bundle, used by CFEngine by default
 # @author CFEngine AS
 # @param service Name of service to control
-# @param state The desired state for that service: "start", "restart", "reload", "stop", or "disable"
+# @param state The desired state for that service: "start", "restart", "reload", "stop", or "disable". "enable", "enabled", and "disabled" are also able to be used when systemd is detected. "active" and "inactive" states are supported for systemd managed hosts and can be used for controlling the services currently running state, but make no promises about the service state on boot.
 #
 # This bundle is used by CFEngine if you don't specify a services
 # handler explicitly, and will work with systemd or chkconfig or other
@@ -238,7 +238,8 @@ bundle agent standard_services(service,state)
       "service_enabled" expression => reglist(@(systemd_service_info), "UnitFileState=enabled");
       "service_enabled" -> { "CFE-2923" }
         expression => returnszero( "$(call_systemctl) is-enabled $(service) > /dev/null 2>&1", useshell);
-      "service_active"  expression => reglist(@(systemd_service_info), "ActiveState=active");
+      "service_active" -> { "CFE-3238" }
+        expression => reglist(@(systemd_service_info), "ActiveState=(active|activating)");
       "service_loaded"  expression => reglist(@(systemd_service_info), "LoadState=loaded");
       "service_notfound" expression => reglist(@(systemd_service_info), "LoadState=not-found");
 
@@ -246,14 +247,21 @@ bundle agent standard_services(service,state)
       "can_start_service"  expression => reglist(@(systemd_service_info), "CanStart=yes");
       "can_reload_service" expression => reglist(@(systemd_service_info), "CanReload=yes");
 
-      "request_start"   expression => strcmp("start", "$(state)");
-      "request_stop"    expression => strcmp("stop", "$(state)");
-      "request_reload"  expression => strcmp("reload", "$(state)");
-      "request_restart" expression => strcmp("restart", "$(state)");
+      "request_start"    expression => strcmp("start", "$(state)");
+      "request_stop"     expression => strcmp("stop", "$(state)");
+      "request_reload"   expression => strcmp("reload", "$(state)");
+      "request_restart"  expression => strcmp("restart", "$(state)");
+      "request_disable"  expression => strcmp("disable", "$(state)");
+      "request_disabled" expression => strcmp("disabled", "$(state)");
+      "request_enable"   expression => strcmp("enable", "$(state)");
+      "request_enabled"  expression => strcmp("enabled", "$(state)");
 
-      "action_custom"  expression => "!(request_start|request_stop|request_reload|request_restart)";
-      "action_start"   expression => "request_start.!service_active.can_start_service";
-      "action_stop"    expression => "request_stop.service_active.can_stop_service";
+      "request_active"   expression => strcmp("active", "$(state)");
+      "request_inactive" expression => strcmp("inactive", "$(state)");
+
+      "action_custom"  expression => "!(request_start|request_stop|request_reload|request_restart|request_disable|request_disabled|request_enable|request_enabled|request_active|request_inactive)";
+      "action_start"   expression => "(request_start|request_active).!service_active.can_start_service";
+      "action_stop"    expression => "(request_stop|request_inactive).service_active.can_stop_service";
       "action_reload"  expression => "request_reload.service_active.can_reload_service";
       "action_restart"         or => {
                                       "request_restart",
@@ -265,10 +273,10 @@ bundle agent standard_services(service,state)
                                      };
 
       # Starting a service implicitly enables it
-      "action_enable"  expression => "request_start.!service_enabled";
+      "action_enable"  expression => "(request_start|request_enable|request_enabled).!service_enabled";
 
       # Respectively, stopping it implicitly disables it
-      "action_disable" expression => "request_stop.service_enabled";
+      "action_disable" expression => "(request_disable|request_disabled|request_stop).service_enabled";
 
   commands:
     systemd.service_loaded:: # note this class is defined in `inventory/linux.cf`

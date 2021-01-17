@@ -72,6 +72,52 @@ bundle common paths
 #        comment => "Alternate array reference style";
 # }
 # ```
+#
+# The paths bundle can be extended with custom paths by tagging *classic array* variables with `paths.cf`.
+#
+# **Example:**
+#
+# ```cf3
+# bundle agent extended_paths_example
+# {
+#   meta:
+#       "tags" slist => { "autorun" };
+#
+#   vars:
+#       # NOTE: the key will be canonified when it's pulled in to the paths bundle.
+#       "path[orange]" string => "/bin/true", meta => { "paths.cf" };
+#       "path[true-blue]" string => "/bin/true", meta => { "paths.cf" };
+#       "foo[bar]" string => "/bin/true", meta => { "paths.cf" };
+#
+#     this_context_isnt_defined_so_no_path::
+#       "path[red]" string => "/bin/true", meta => { "paths.cf" };
+#
+#   reports:
+#     _stdlib_path_exists_orange::
+#       "path paths.orange == $(paths.orange)";
+#       "path paths.path[orange] == $(paths.path[orange])";
+#
+#     _stdlib_path_exists_bar::
+#       "path paths.bar == $(paths.bar)";
+#       "path paths.path[bar] == $(paths.path[bar])";
+#
+#     _stdlib_path_exists_true_blue::
+#       "path paths.true_blue == $(paths.true_blue)";
+#       "path paths.path[true_blue] == $(paths.path[true_blue])";
+#
+#     _stdlib_path_exists_red::
+#       "path paths.red == $(paths.red)";
+#       "path paths.path[red] == $(paths.path[red])";
+#
+#     !_stdlib_path_exists_red::
+#       "path paths.red was not found";
+#       "path paths.path[red] was not found";
+# }
+# ```
+#
+# **History:**
+#
+# - Ability to extend paths by tagging classic array variables added 3.17.0, 3.15.3 (works with binary version 3.11.0 and greater)
 {
   vars:
 
@@ -502,6 +548,52 @@ bundle common paths
     !(suse|sles)::
       "path[logger]"        string => "/usr/bin/logger";
 
+    opensuse::
+      "path[ls]"        string => "/usr/bin/ls";
+      "path[lsof]"      string => "/usr/bin/lsof";
+      "path[awk]"       string => "/usr/bin/awk";
+      "path[cat]"       string => "/usr/bin/cat";
+      "path[cksum]"     string => "/usr/bin/cksum";
+      "path[crontab]"   string => "/usr/bin/crontab";
+      "path[curl]"      string => "/usr/bin/curl";
+      "path[cut]"       string => "/usr/bin/cut";
+      "path[df]"        string => "/usr/bin/df";
+      "path[diff]"      string => "/usr/bin/diff";
+      "path[dig]"       string => "/usr/bin/dig";
+      "path[dmidecode]" string => "/usr/sbin/dmidecode";
+      "path[echo]"      string => "/usr/bin/echo";
+      "path[egrep]"     string => "/usr/bin/egrep";
+      "path[ethtool]"   string => "/usr/sbin/ethtool";
+      "path[find]"      string => "/usr/bin/find";
+      "path[free]"      string => "/usr/bin/free";
+      "path[grep]"      string => "/usr/bin/grep";
+      "path[hostname]"  string => "/usr/bin/hostname";
+      "path[init]"      string => "/sbin/init";
+      "path[iptables]"  string => "/usr/sbin/iptables";
+      "path[ls]"        string => "/usr/bin/ls";
+      "path[lsof]"      string => "/usr/bin/lsof";
+      "path[nologin]"   string => "/sbin/nologin";
+      "path[ping]"      string => "/usr/bin/ping";
+      "path[perl]"      string => "/usr/bin/perl";
+      "path[printf]"    string => "/usr/bin/printf";
+      "path[sed]"       string => "/usr/bin/sed";
+      "path[sort]"      string => "/usr/bin/sort";
+      "path[test]"      string => "/usr/bin/test";
+      "path[tr]"        string => "/usr/bin/tr";
+      "path[logger]"    string => "/usr/bin/logger";
+      "path[wget]"      string => "/usr/bin/wget";
+      "path[chkconfig]" string => "/sbin/chkconfig";
+      "path[groupadd]"  string => "/usr/sbin/groupadd";
+      "path[groupdel]"  string => "/usr/sbin/groupdel";
+      "path[groupmod]"  string => "/usr/sbin/groupmod";
+      "path[ip]"        string => "/sbin/ip";
+      "path[rpm]"       string => "/usr/bin/rpm";
+      "path[service]"   string => "/sbin/service";
+      "path[useradd]"   string => "/usr/sbin/useradd";
+      "path[userdel]"   string => "/usr/sbin/userdel";
+      "path[usermod]"   string => "/usr/sbin/usermod";
+      "path[zypper]"    string => "/usr/bin/zypper";
+
     suse|sles::
 
       "path[awk]"           string => "/usr/bin/awk";
@@ -572,6 +664,16 @@ bundle common paths
       "path[shadow]"       string => "/etc/security/passwd";
 
     any::
+@if minimum_version(3.11.0)
+      # Pull in variables tagged with `paths.cf`
+      "_extended_path_data" -> { "CFE-3426" }
+        data => variablesmatching_as_data( ".*", "paths.cf" );
+      "_i" -> { "CFE-3426" }
+        slist => getindices( _extended_path_data );
+      "path[$(with)]" -> { "CFE-3426" }
+        string => "$(_extended_path_data[$(_i)])",
+        with => canonify( regex_replace( $(_i), ".*\[(.*)\]", "$1", "") );
+@endif
 
       "all_paths"     slist => getindices("path");
       "$(all_paths)" string => "$(path[$(all_paths)])";

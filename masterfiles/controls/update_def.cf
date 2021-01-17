@@ -13,7 +13,7 @@ bundle common update_def
     any::
       "sys_policy_hub_port_exists" expression => isvariable("sys.policy_hub_port");
   vars:
-      "current_version" string => "3.15.0";
+      "current_version" string => "3.15.3";
 
     !feature_def_json_preparse::
       "augments_file" string => "$(this.promise_dirname)/../../def.json";
@@ -77,10 +77,10 @@ bundle common update_def
 
       # Default the input name patterns, if we don't find it defined in def
       # (from the augments_file).
-      "input_name_patterns"
+      "input_name_patterns" -> { "CFE-3425" }
         slist => { ".*\.cf",".*\.dat",".*\.txt", ".*\.conf", ".*\.mustache",
                    ".*\.sh", ".*\.pl", ".*\.py", ".*\.rb", ".*\.sed", ".*\.awk",
-                   "cf_promises_release_id", ".*\.json", ".*\.yaml" },
+                   "cf_promises_release_id", ".*\.json", ".*\.yaml", ".*\.csv" },
         comment => "Filename patterns to match when updating the policy
                     (see update/update_policy.cf)",
         handle => "common_def_vars_input_name_patterns_policy_default",
