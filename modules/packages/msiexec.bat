@@ -73,19 +73,9 @@ goto :EOF
 
 
 
-rem Process output of 'wmic product get name,version /value' command
+rem Call vbs script to read installed software from registry
 :list_installed
-  rem Escape comma in for expression so it's not counted as a command separator
-  rem (quotes can't help here - they get appended to program arguments and break it)
-  for /f "usebackq delims=" %%a in (`%WMIC% product get name^,version /value`) do (
-    set "_q=%%a"
-    rem * Do not print lines consisting of a single character (it's LF anyway)
-    rem * Print lines excluding last character (it's LF anyway)
-    if not "!_q:~0,-1!"=="" echo !_q:~0,-1!
-    rem In lack of other information we assume that all packages have CPU architecture
-    if "!_q:~0,8!"=="Version=" echo Architecture=%PROCESSOR_ARCHITECTURE%
-    timeout 0 >nul
-  )
+  %CSCRIPT% /nologo "%~dp0\msiexec-list.vbs"
 goto :EOF
 
 
@@ -106,8 +96,17 @@ rem Install this file if it exists
     goto :EOF
   )
 
-  %MSIEXEC% /quiet /passive /qn /norestart /i %1
-  rem TODO options, error checking
+  set log_dir="\cfengine_package_logs\"
+  if not exist %log_dir% (
+    mkdir %log_dir%
+  )
+  for /F "delims=" %%i in (%1) do @set basename="%%~ni"
+  REM %log_dir:"=% replaces quotes with nothing, otherwise you get two double-quotes which causes failures
+  set log_file="%log_dir:"=%%basename:"=%_install.log"
+  %MSIEXEC% /quiet /passive /qn /norestart /l*vx %log_file% /i %1
+  if not errorlevel 0 (
+    echo ErrorMessage=msiexec.exe ErrorLevel was %ErrorLevel% for file %1 log at %log_file%
+  )
 goto :EOF
 
 

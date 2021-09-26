@@ -15,6 +15,9 @@ body common control
                           def,
                           @(cfengine_enterprise_hub_ha.classification_bundles),
 
+                          # Custom classification
+                          @(def.bundlesequence_classification),
+
                           # autorun system
                           services_autorun,
                           @(services_autorun.bundles),
@@ -49,7 +52,7 @@ body common control
                   "services/main.cf",
       };
 
-      version => "CFEngine Promises.cf 3.15.3";
+      version => "CFEngine Promises.cf 3.15.4";
 
       # From 3.7 onwards there is a new package promise implementation using package
       # modules in which you MUST provide package modules used to generate
@@ -76,6 +79,10 @@ body common control
           package_module => $(package_module_knowledge.platform_default);
 @endif
 
+    alpinelinux::
+          package_module => $(package_module_knowledge.platform_default);
+
+
     any::
         ignore_missing_bundles => "$(def.control_common_ignore_missing_bundles)";
         ignore_missing_inputs => "$(def.control_common_ignore_missing_inputs)";
@@ -94,7 +101,7 @@ bundle common inventory
 # Tested to work properly against 3.5.x
 {
   classes:
-      "other_unix_os" expression => "!windows.!macos.!linux.!freebsd";
+      "other_unix_os" expression => "!(windows|macos|linux|freebsd|aix)";
       "specific_linux_os" expression => "redhat|debian|suse|sles";
 
   vars:
@@ -290,11 +297,30 @@ bundle common cfengine_controls
 
 bundle common services_autorun
 # @brief Include autorun policy and discover autorun bundles if enabled
+#
+# Files inside directories listed in `def.mpf_extra_autorun_inputs` will be
+# added to inputs automatically.
 {
   vars:
     services_autorun::
       "inputs" slist => { "$(sys.local_libdir)/autorun.cf" };
-      "found_inputs" slist => lsdir("$(this.promise_dirname)/services/autorun", ".*\.cf", "true");
+
+      "_default_autorun_input_dir"
+        string => "$(this.promise_dirname)/services/autorun";
+      "_default_autorun_inputs"
+        slist => lsdir( "$(_default_autorun_input_dir)", ".*\.cf", "true");
+
+      "_extra_autorun_input_dirs"
+        slist => { @(def.mpf_extra_autorun_inputs) },
+        if => isvariable( "def.mpf_extra_autorun_inputs" );
+
+      "_extra_autorun_inputs[$(_extra_autorun_input_dirs)]"
+        slist => lsdir("$(_extra_autorun_input_dirs)/.", ".*\.cf", "true"),
+        if => isdir( $(_extra_autorun_input_dirs) );
+
+      "found_inputs" slist => { @(_default_autorun_inputs),
+                                sort( getvalues(_extra_autorun_inputs), "lex") };
+
       "bundles" slist => { "autorun" }; # run loaded bundles
 
     !services_autorun::
