@@ -67,9 +67,12 @@ bundle common cfe_internal_hub_vars
       "SSLCertificateDaysValid" string => "3650";
 
       # Determine the version of PHP that is used
+      # TODO Drop this after 3.18 is no longer supported. It's used for Mission Portals httpd configuration.
 
-      "php_version"
-        string => ifelse( fileexists( "$(sys.workdir)/httpd/modules/libphp7.so" ), "7",
+      "php_version" -> { "ENT-7039" }
+        string => ifelse(
+                          fileexists( "$(sys.workdir)/httpd/modules/libphp.so" ), "", # ENT-7039 php 8+
+                          fileexists( "$(sys.workdir)/httpd/modules/libphp7.so" ), "7",
                           fileexists( "$(sys.workdir)/httpd/modules/libphp5.so" ), "5",
                           "UNKNOWN" );
 
@@ -346,7 +349,7 @@ bundle agent cfe_internal_truncate_events
 {
   commands:
     Hr05.Min00_05::
-      "$(sys.workdir)/httpd/php/bin/php $(cfe_internal_hub_vars.docroot)/index.php cli_tasks truncate_events"
+      "$(sys.workdir)/httpd/php/bin/php $(cfe_internal_hub_vars.public_docroot)/index.php cli_tasks truncate_events"
       contain => silent,
       comment => "Truncate all the pending notifications if there is any",
       handle  => "cfe_internal_truncate_event_mp";
@@ -554,29 +557,17 @@ bundle agent cfe_internal_enterprise_maintenance
 
       "Enterprise Maintenance"
         usebundle => $(enterprise_maintenance_bundles),
-        ifvarclass => isgreaterthan( $(enterprise_maintenance_bundle_count), 0 );
+        if => isgreaterthan( $(enterprise_maintenance_bundle_count), 0 );
 
   reports:
 
     "DEBUG|DEBUG_$(this.bundle)"::
 
       "DEBUG $(this.bundle): $(enterprise_maintenance_bundle_count) CFEngine Enterprise Maintenance Bundles"
-        ifvarclass => isgreaterthan( $(enterprise_maintenance_bundle_count), 0 );
+        if => isgreaterthan( $(enterprise_maintenance_bundle_count), 0 );
 
       "DEBUG $(this.bundle): $(enterprise_maintenance_bundles) CFEngine Enterprise Maintenance Bundles"
-        ifvarclass => isgreaterthan( $(enterprise_maintenance_bundle_count), 0 );
-}
-
-bundle agent cfe_internal_refresh_inventory_args
-{
-  vars:
-    cfengine_enterprise_federation:am_superhub::
-      "args" -> {"ENT-4527"}
-        string => "inventory_refresh_by_hostkey $(sys.key_digest)",
-        comment => "Only refresh inventory for the superhub, other hosts get refreshed on data import";
-
-    !cfengine_enterprise_federation:am_superhub::
-      "args" string => "inventory_refresh";
+        if => isgreaterthan( $(enterprise_maintenance_bundle_count), 0 );
 }
 
 bundle agent cfe_internal_exported_report_location
@@ -601,7 +592,7 @@ bundle agent cfe_internal_exported_report_location
 }
 
 bundle agent cfe_internal_refresh_inventory_view
-# @brief Refresh materialized view every 5 minutes
+# @brief Refresh list of inventory variables every 5 minutes
 {
   meta:
 
@@ -609,20 +600,12 @@ bundle agent cfe_internal_refresh_inventory_view
 
       "tags" slist => { "enterprise_maintenance" };
 
-  methods:
-@if minimum_version(3.12.0)
-      # we need to know if we are running on a superhub
-      "superhub_config" usebundle => "cfengine_enterprise_federation:config";
-@endif
-
-      "inventory_refresh_args" usebundle => "cfe_internal_refresh_inventory_args";
-
   commands:
 
     (policy_server|am_policy_hub).enterprise_edition.active_hub::
 
       "$(sys.workdir)/httpd/php/bin/php"
-        args => "$(cfe_internal_hub_vars.docroot)/index.php cli_tasks $(cfe_internal_refresh_inventory_args.args)",
+        args => "$(cfe_internal_hub_vars.public_docroot)/index.php cli_tasks inventory_refresh",
         contain => silent,
 @if minimum_version(3.15.0)
         inform => "false",
@@ -646,7 +629,7 @@ bundle agent cfe_internal_refresh_hosts_view
     (policy_server|am_policy_hub).enterprise_edition.active_hub::
 
       "$(sys.workdir)/httpd/php/bin/php" -> { "ENT-3482" }
-        args => "$(cfe_internal_hub_vars.docroot)/index.php cli_tasks materialized_hosts_view_refresh",
+        args => "$(cfe_internal_hub_vars.public_docroot)/index.php cli_tasks materialized_hosts_view_refresh",
         contain => silent,
 @if minimum_version(3.15.0)
         inform => "false",
@@ -671,7 +654,7 @@ bundle agent cfe_internal_clear_last_seen_hosts_logs
     (policy_server|am_policy_hub).enterprise_edition.active_hub.(cfengine_3_12|cfengine_3_13|cfengine_3_14)::
 
       "$(sys.workdir)/httpd/php/bin/php" -> { "ENT-3550" }
-        args => "$(cfe_internal_hub_vars.docroot)/index.php cli_tasks clearLastSeenHostsLogs",
+        args => "$(cfe_internal_hub_vars.public_docroot)/index.php cli_tasks clearLastSeenHostsLogs",
         contain => silent,
         comment => "This clears the __lastseenhostslogs table. If the __lastseenhostslogs table is not cleared then it will contain unnecessary data.",
         handle  => "mpf_clear_lastseenhostslogs",
@@ -693,7 +676,7 @@ bundle agent cfe_internal_refresh_events_table
     (policy_server|am_policy_hub).enterprise_edition.active_hub::
 
       "$(sys.workdir)/httpd/php/bin/php"
-        args => "$(cfe_internal_hub_vars.docroot)/index.php cli_tasks process_api_events",
+        args => "$(cfe_internal_hub_vars.public_docroot)/index.php cli_tasks process_api_events",
         contain => silent,
 @if minimum_version(3.15.0)
         inform => "false",
@@ -701,6 +684,31 @@ bundle agent cfe_internal_refresh_events_table
         comment => "This refreshes the events table. If the events table is not refreshed then it will contain stale data.",
         handle  => "mpf_fresh_events_table",
         if => fileexists( "$(cfe_internal_hub_vars.docroot)/api/resource-v1/Event.php" );
+}
+
+bundle agent cfe_internal_update_health_failures
+# @brief Update table that contains health diagnostics failures hosts
+{
+  meta:
+
+    (policy_server|am_policy_hub).enterprise_edition::
+
+      "tags" slist => { "enterprise_maintenance" };
+
+  commands:
+
+    (policy_server|am_policy_hub).enterprise_edition.active_hub::
+
+      "$(sys.workdir)/httpd/php/bin/php" -> { "ENT-6228" }
+        args => "$(cfe_internal_hub_vars.public_docroot)/index.php cli_tasks update_health_failures",
+        contain => silent,
+@if minimum_version(3.15.0)
+        inform => "false",
+@endif
+        comment => "This updates health diagnostics failures table. If the table is not updated then it will contain stale data.",
+        handle  => "mpf_update_health_failures",
+        if => isgreaterthan(countlinesmatching(".*update_health_failures.*", "$(cfe_internal_hub_vars.docroot)/application/controllers/Cli_tasks.php"), 0);
+
 }
 
 body classes cfe_internal_log_utilization(time)
@@ -732,6 +740,18 @@ bundle agent cfe_internal_enterprise_policy_analyzer
       "analyzer_dir" string => "/opt/cfengine/analyzer/policy/masterfiles";
       "analyzer_source" string => "$(sys.masterdir)";
 
+      "exclude_files" -> { "ENT-7684" }
+        slist => { "" },
+        unless => isvariable( "def.cfengine_enterprise_policy_analyzer_exclude_files" ),
+        comment => concat( "By default policy analyzer will get access to all files, ",
+                           "that are part of the policy." );
+
+      "exclude_files" -> { "ENT-7684" }
+        slist => { "@(def.cfengine_enterprise_policy_analyzer_exclude_files)" },
+        if => isvariable( "def.cfengine_enterprise_policy_analyzer_exclude_files" ),
+        comment => concat( "A list of regular expressions matching file leaf names ",
+                           "that should not be copied for access by policy analyzer." );
+
   classes:
 
     enterprise_edition.policy_server::
@@ -748,7 +768,7 @@ bundle agent cfe_internal_enterprise_policy_analyzer
 
        "$(analyzer_dir)/."
          copy_from => analyzer_sync( $(analyzer_source) ),
-         file_select => all,
+         file_select => default:ex_list( @(exclude_files) ),
          depth_search => recurse_with_base( inf ),
          perms => mog( "400", $(def.cf_apache_user), $(def.cf_apache_group) );
 

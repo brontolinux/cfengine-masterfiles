@@ -50,13 +50,11 @@ body server control
       # to complete report transfer.
         collect_window => "$(def.control_server_collect_window)";
 
-    # The MPF provides different variables for configuring which users are
-    # allowed to initiate execution via cf-runagent.
-    !policy_server::
-      allowusers => { @(def.control_server_allowusers_non_policy_server) };
+    any::
+      # The remote user accounts which are allowed to initiate cf-agent via
+      # cf-runagent.
 
-    policy_server::
-        allowusers => { @(def.control_server_allowusers_policy_server) };
+      allowusers => { @(def.control_server_allowusers) };
 
     windows::
       cfruncommand => "$(sys.cf_agent) -I -D cf_runagent_initiated -f \"$(sys.update_policy_path)\"  &
@@ -72,11 +70,16 @@ body server control
                            $(sys.cf_agent) -I -D cf_runagent_initiated -f $(sys.update_policy_path)  ;
                            $(sys.cf_agent) -I -D cf_runagent_initiated";
 
+    # Use bindtointerface to specify interface to bind to, the default is :: +
+    # 0.0.0.0/0 if IPV6 is supported or 0.0.0.0/0 if IPV6 is not supported. On
+    # Windows, binding to :: means only IPV6 connections will be accepted.
+    # !windows::
+    #   bindtointerface => "::";
 }
 
 ###############################################################################
 
-bundle server access_rules()
+bundle server mpf_default_access_rules()
 # @brief Defines access to common resources
 {
   access:
@@ -110,7 +113,8 @@ bundle server access_rules()
       if => isdir( "$(def.dir_modules)/" ),
       admit => { @(def.acl) };
 
-      "$(def.dir_plugins)/"
+      # TODO: Remove after 3.15 is no longer supported (December 18th 2022)
+      "$(def.dir_plugins)/" -> { "CFE-3618" }
       handle => "server_access_grant_access_plugins",
       comment => "Grant access to plugins directory",
       if => isdir( "$(def.dir_plugins)/" ),
@@ -132,16 +136,22 @@ bundle server access_rules()
         if => isdir( "$(sys.workdir)/master_software_updates" ),
         admit => { @(def.acl) };
 
-      enterprise_edition.policy_server::
-        "collect_calls"
-          resource_type => "query",
-          admit_ips => { @(def.mpf_access_rules_collect_calls_admit_ips) };
+    enterprise_edition.policy_server::
+      "collect_calls"
+        resource_type => "query",
+        admit_ips => { @(def.mpf_access_rules_collect_calls_admit_ips) };
+
+      "$(sys.workdir)/cmdb/$(connection.key)/" -> { "ENT-6788" }
+        handle => "server_access_grant_access_cmdb",
+        comment => "Grant access to host specific CMDB data",
+        shortcut => "hub_cmdb",
+        admit_keys => { $(connection.key) };
 
     !windows::
-      "$(def.cf_runagent_shell)"
+      "$(def.cf_runagent_shell)" -> { "ENT-6673" }
       handle => "server_access_grant_access_shell_cmd",
       comment => "Grant access to shell for cfruncommand",
-      admit => { @(def.policy_servers) };
+      admit => { @(def.mpf_admit_cf_runagent_shell_selected) };
 
     policy_server.enable_cfengine_enterprise_hub_ha::
       "$(sys.workdir)/ppkeys/"

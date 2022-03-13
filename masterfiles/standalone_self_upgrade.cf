@@ -38,7 +38,7 @@ bundle agent main
 
       "cfengine_software";
 
-    am_policy_hub|policy_server::
+    (am_policy_hub|policy_server).!mpf_disable_hub_masterfiles_software_update_seed::
 
       "Master Software Repository Data"
         usebundle => cfengine_master_software_content;
@@ -82,10 +82,15 @@ bundle agent cfengine_software
 
       # Default desired CFEngine software
       "pkg_name" string => ifelse( isvariable( "def.cfengine_software_pkg_name" ), $(def.cfengine_software_pkg_name), "cfengine-nova");
-      "pkg_version" string => ifelse( isvariable( "def.cfengine_software_pkg_version" ), $(def.cfengine_software_pkg_version), "3.15.5");
+      "pkg_version" string => ifelse( isvariable( "def.cfengine_software_pkg_version" ), $(def.cfengine_software_pkg_version), "3.18.1");
       "pkg_release" string => ifelse( isvariable( "def.cfengine_software_pkg_release" ), $(def.cfengine_software_pkg_release), "1");
       "pkg_arch" string => ifelse( isvariable( "def.cfengine_software_pkg_arch" ), $(def.cfengine_software_pkg_arch), "x86_64");
       "package_dir" string => ifelse( isvariable( "def.cfengine_software_pkg_dir" ), $(def.cfengine_software_pkg_dir), "$(sys.flavour)_$(sys.arch)");
+      "pkg_edition_path" string => ifelse( isvariable( "def.cfengine_software_pkg_edition_path" ), $(def.cfengine_software_pkg_edition_path), "enterprise/Enterprise-$(pkg_version)/agent");
+
+    community_edition::
+      "pkg_name" string => "cfengine-community";
+      "pkg_edition_path" string => "community_binaries/Community-$(pkg_version)";
 
     aix::
       "pkg_name" string => "cfengine.cfengine-nova";
@@ -140,6 +145,15 @@ bundle agent cfengine_software
 
       "$(sys.statedir)/MPF/desired-cfengine-package-version.json" -> { "ENT-3592", "ENT-3937" }
         edit_line => cfengine_software_version_data;
+
+    windows::
+      "$(sys.bindir)$(const.dirsep)vercmp.ps1"
+        create => "true",
+        template_method => "mustache",
+        edit_template => "$(this.promise_dirname)$(const.dirsep)/templates/vercmp.ps1",
+        template_data => mergedata( '{}' ),
+        comment => "We need to use specialized version comparison logic for unattended self upgrades.";
+
 }
 
 bundle edit_line cfengine_software_version_data
@@ -208,17 +222,16 @@ bundle agent cfengine_software_version
                 "redhat.!redhat_4",
                 "centos.!centos_4",
                 "debian",
+                "suse|opensuse",
                 "ubuntu",
                 "hpux",
                 "aix",
-                "SUSE_11",
-                "SUSE_12",
                 "windows", # ENT-4094
         };
 
       # Add "windows" to __new_implementation classes with ENT-6823
       "__new_implementation"
-        or => { "redhat", "centos", "ubuntu", "debian" };
+        or => { "redhat", "centos", "ubuntu", "debian", "suse", "opensuse" };
 
   vars:
       "pkg_name" string => "$(cfengine_software.pkg_name)";
@@ -242,7 +255,7 @@ bundle agent cfengine_software_version
       # when ENT-6823 allows us to use msiexec.bat packages module.
       "Windows Unattended Upgrade Workaround"
         usebundle => windows_unattended_upgrade,
-        ifvarclass => and(
+        if => and(
           "windows",
           or(
               not(strcmp("$(cfengine_software.pkg_version)", "$(sys.cf_version)")),
@@ -268,17 +281,23 @@ bundle agent cfengine_software_version_packages2
 
   packages:
 
-    (redhat|centos).!__supported::
+    (redhat|centos)::
       "$(local_software_dir)/$(cfengine_package_names.my_pkg)"
       policy => "present",
       package_module => yum,
       comment => "Ensure the latest package is installed";
 
-    (debian|ubuntu).!__supported::
+    (debian|ubuntu)::
       "$(local_software_dir)/$(cfengine_package_names.my_pkg)"
       policy => "present",
       package_module => apt_get,
       comment => "Ensure the latest package is installed";
+
+    (opensuse|suse)::
+      "$(local_software_dir)/$(cfengine_package_names.my_pkg)"
+        policy => "present",
+        package_module => zypper,
+        comment => "Ensure the latest package is installed";
 
      # TODO, uncomment the following to enable msiexec packages module (ENT-6823)
 #    windows::
@@ -320,8 +339,9 @@ bundle agent cfengine_software_version_packages1
 
       "local_software_dir" string => "$(cfengine_software.local_software_dir)";
 
-      "desired_version"
+      "desired_version" -> { "ENT-4094" }
         string => ifelse("linux", "$(cfengine_software.pkg_version)-$(cfengine_software.pkg_release)",
+                         "windows", "$(cfengine_software.pkg_version).$(cfengine_software.pkg_release)", # ENT-4094
                          "aix", "$(cfengine_software.pkg_version).0",
                          $(cfengine_software.pkg_version) ),
         comment => "The version attribute sometimes contains package release
@@ -374,7 +394,7 @@ bundle agent cfengine_software_version_packages1
       comment => "Create a backup script for cf-upgrade",
       handle => "cfe_internal_update_bins_files_backup_script",
       create => "true",
-      ifvarclass => "!windows",
+      if => "!windows",
       edit_defaults => u_empty_no_backup,
       edit_line => u_backup_script,
       perms => u_m("0755");
@@ -383,7 +403,7 @@ bundle agent cfengine_software_version_packages1
       comment => "Create an install script for cf-upgrade",
       handle => "cfe_internal_update_bins_files_install_script",
       create => "true",
-      ifvarclass => "!windows",
+      if => "!windows",
       edit_defaults => u_empty_no_backup,
       edit_line => u_install_script,
       perms => u_m("0755");
@@ -395,7 +415,7 @@ bundle agent cfengine_software_version_packages1
       edit_defaults => u_empty_no_backup,
       edit_line => u_admin_file,
       perms => u_m("0644"),
-      ifvarclass => "solarisx86|solaris";
+      if => "solarisx86|solaris";
 
   packages:
     # Only non policy hubs running are allowed to self upgrade
@@ -496,7 +516,8 @@ bundle agent cfengine_master_software_content
       "pkg_release" string => "$(cfengine_software.pkg_release)";
       "pkg_arch" string => "$(cfengine_software.pkg_arch)";
       "package_dir" string => "$(cfengine_software.package_dir)";
-      "base_url" string => "https://cfengine-package-repos.s3.amazonaws.com/enterprise/Enterprise-$(pkg_version)/agent";
+      "pkg_edition" string => "$(cfengine_software.pkg_edition_path)";
+      "base_url" string => "https://cfengine-package-repos.s3.amazonaws.com/$(pkg_edition)";
 
       # Map platform/directory identifier to upstream package URLs
       # Better to read in an external explicit data structure?
@@ -717,7 +738,7 @@ body classes u_if_else(yes,no)
 body common control
 # @brief Common control for standalone self upgrade
 {
-      version => "CFEngine Standalone Self Upgrade 3.15.5";
+      version => "CFEngine Standalone Self Upgrade 3.18.1";
 
     (debian|ubuntu)::
       package_inventory => { $(package_module_knowledge.platform_default) };
@@ -839,6 +860,8 @@ body package_method u_generic(repo)
         package_add_command        => "\"$(sys.winsysdir)\msiexec.exe\" /qn /i";
         package_update_command     => "\"$(sys.winsysdir)\msiexec.exe\" /qn /i";
         package_delete_command     => "\"$(sys.winsysdir)\msiexec.exe\" /qn /x";
+        package_version_less_command => '$(sys.winsysdir)$(const.dirsep)WindowsPowerShell$(const.dirsep)v1.0$(const.dirsep)powershell.exe "$(sys.bindir)$(const.dirsep)vercmp.ps1" "$(v1)" "lt" "$(v2)"';
+        package_version_equal_command => '$(sys.winsysdir)$(const.dirsep)WindowsPowerShell$(const.dirsep)v1.0$(const.dirsep)powershell.exe "$(sys.bindir)$(const.dirsep)vercmp.ps1" "$(v1)" "eq" "$(v2)"';
 
     freebsd::
 
@@ -953,6 +976,16 @@ body package_module apt_get
       query_updates_ifelapsed => "30";
 @if minimum_version(3.12.2)
       interpreter => "$(sys.bindir)/cfengine-selected-python";
+@endif
+}
+
+body package_module zypper
+{
+        query_installed_ifelapsed => "0";
+        query_updates_ifelapsed => "30";
+      #default_options =>  {};
+@if minimum_version(3.12.2)
+        interpreter => "$(sys.bindir)/cfengine-selected-python";
 @endif
 }
 

@@ -31,11 +31,11 @@ bundle common inventory_linux
     any::
       "proc_routes" data => data_readstringarrayidx("/proc/net/route",
                                                     "#[^\n]*","\s+",40,4k),
-        ifvarclass => fileexists("/proc/net/route");
+        if => fileexists("/proc/net/route");
       "routeidx" slist => getindices("proc_routes");
       "dgw_ipv4_iface" string => "$(proc_routes[$(routeidx)][0])",
         comment => "Name of the interface where default gateway is routed",
-        ifvarclass => strcmp("$(proc_routes[$(routeidx)][1])", "00000000");
+        if => strcmp("$(proc_routes[$(routeidx)][1])", "00000000");
 
     linux::
       "nfs_servers" -> { "CFE-3259" }
@@ -89,4 +89,21 @@ bundle common inventory_linux
     (DEBUG|DEBUG_inventory_linux).has_os_release::
       "DEBUG $(this.bundle)";
       "$(const.t)OS release ID = $(os_release_id), OS release version = $(os_release_version)";
+}
+
+bundle monitor measure_entropy_available
+# @brief Measure amount of entropy available
+{
+  measurements:
+    linux::
+      # A lack of entropy can cause agents to hang
+      "/proc/sys/kernel/random/entropy_avail" -> { "ENT-6495", "ENT-6494" }
+        if => fileexists( "/proc/sys/kernel/random/entropy_avail" ),
+        handle => "entropy_avail",
+        stream_type => "file",
+        data_type => "int",
+        units => "bits",
+        history_type => "weekly",
+        match_value => single_value("\d+"),
+        comment => "Amount of entropy available";
 }
