@@ -14,6 +14,42 @@ body file control
 {
   inputs => { @(standalone_self_upgrade_file_control.inputs) };
 }
+bundle common def_standalone_self_upgrade
+{
+  vars:
+
+      "control_agent_agentfacility" -> { "ENT-10209" }
+        string => "",
+        if => not( isvariable ( "default:def.control_agent_agentfacility" ));
+
+  classes:
+
+      "control_agent_agentfacility_configured" -> { "ENT-10209" }
+        expression => regcmp( "LOG_(USER|DAEMON|LOCAL[0-7])",
+                              $(control_agent_agentfacility) ),
+        comment => concat( "If default:def.control_agent_agentfacility is a",
+                           " valid setting, we want to use it in body agent",
+                           " control for setting agentfacility" );
+
+      "control_common_tls_min_version_defined" -> { "ENT-10198" }
+        expression => isvariable( "default:def.control_common_tls_min_version"),
+        comment => concat( "If default:def.control_common_tls_min_version is defined then",
+                           " it's value will be used for the minimum version in outbound",
+                           " connections. Else the binary default will be used.");
+
+      "control_common_tls_ciphers_defined" -> { "ENT-10198" }
+        expression => isvariable( "default:def.control_common_tls_ciphers"),
+        comment => concat( "If default:def.control_common_tls_ciphers is defined then",
+                           " it's value will be used for the set of tls ciphers allowed",
+                           " for outbound connections. Else the binary default will be used.");
+}
+body agent control
+# @brief Agent controls for standalone self upgrade
+{
+    control_agent_agentfacility_configured::
+
+        agentfacility => "$(default:update_def.control_agent_agentfacility)";
+}
 bundle agent main
 # @brief This bundle drives the self upgrade. It actuates the appropriate
 # bundles to download binaries to the hub for serving to clients, caching the
@@ -82,7 +118,7 @@ bundle agent cfengine_software
 
       # Default desired CFEngine software
       "pkg_name" string => ifelse( isvariable( "def.cfengine_software_pkg_name" ), $(def.cfengine_software_pkg_name), "cfengine-nova");
-      "pkg_version" string => ifelse( isvariable( "def.cfengine_software_pkg_version" ), $(def.cfengine_software_pkg_version), "3.18.1");
+      "pkg_version" string => ifelse( isvariable( "def.cfengine_software_pkg_version" ), $(def.cfengine_software_pkg_version), "3.18.5");
       "pkg_release" string => ifelse( isvariable( "def.cfengine_software_pkg_release" ), $(def.cfengine_software_pkg_release), "1");
       "pkg_arch" string => ifelse( isvariable( "def.cfengine_software_pkg_arch" ), $(def.cfengine_software_pkg_arch), "x86_64");
       "package_dir" string => ifelse( isvariable( "def.cfengine_software_pkg_dir" ), $(def.cfengine_software_pkg_dir), "$(sys.flavour)_$(sys.arch)");
@@ -93,12 +129,11 @@ bundle agent cfengine_software
       "pkg_edition_path" string => "community_binaries/Community-$(pkg_version)";
 
     aix::
-      "pkg_name" string => "cfengine.cfengine-nova";
+      "pkg_name" string => "cfengine-nova";
       "pkg_arch" string => "default";
 
-      # TODO ENT-3187
     solaris|solarisx86::
-      "pkg_name" string => "CFE.cfengine-nova";
+      "pkg_name" string => "cfengine-nova";
 
     (debian|ubuntu).64_bit::
 
@@ -106,6 +141,14 @@ bundle agent cfengine_software
         string => "amd64",
         comment => "On debian hosts it's the standard to use 'amd64' instead of
                    'x86_64' in package architectures.";
+
+    (debian|ubuntu).aarch64::
+
+      "pkg_arch"
+        string => "arm64",
+        comment => concat( "On debian hosts it's the CFEngine standard to use 'arm64' in",
+                           "the package filename." );
+
 
     (redhat|centos|suse|sles).32_bit::
       "pkg_arch"
@@ -120,6 +163,16 @@ bundle agent cfengine_software
         comment => "The directory within software updates to look for packages.
                     On HPUX sys.flavor includes versions, so we use sys.class
                     instead.";
+
+    windows::
+
+      "package_dir" -> { "ENT-9010" }
+        string => "$(sys.class)_$(sys.arch)",
+        comment => concat( "The directory within software updates to look for ",
+                           "packages. Since one package is built for each",
+                           "supported architecture instead of each platform",
+                           "version architecture we use sys.class and sys.arch.");
+
     any::
 
       "local_software_dir"
@@ -217,8 +270,9 @@ bundle agent cfengine_software_version
 # upgrading.
 {
   classes:
-      "__supported_platform" -> { "ENT-5045", "ENT-5152", "ENT-4094" }
+      "__supported_platform" -> { "ENT-5045", "ENT-5152", "ENT-4094", "ENT-8247" }
         or => {
+                "amazon_linux",
                 "redhat.!redhat_4",
                 "centos.!centos_4",
                 "debian",
@@ -231,7 +285,7 @@ bundle agent cfengine_software_version
 
       # Add "windows" to __new_implementation classes with ENT-6823
       "__new_implementation"
-        or => { "redhat", "centos", "ubuntu", "debian", "suse", "opensuse" };
+        or => { "amazon_linux", "redhat", "centos", "ubuntu", "debian", "suse", "opensuse" };
 
   vars:
       "pkg_name" string => "$(cfengine_software.pkg_name)";
@@ -281,7 +335,7 @@ bundle agent cfengine_software_version_packages2
 
   packages:
 
-    (redhat|centos)::
+    (amazon_linux|redhat|centos)::
       "$(local_software_dir)/$(cfengine_package_names.my_pkg)"
       policy => "present",
       package_module => yum,
@@ -448,7 +502,7 @@ bundle common cfengine_package_names
       "pkg_release" string => "$(cfengine_software.pkg_release)";
       "pkg_arch" string => "$(cfengine_software.pkg_arch)";
 
-      # Redhat/Centos/Oracle 5, SLES 11 use the same package
+      # Redhat/Centos/Oracle 5, SuSE 11 use the same package
 
       "pkg[redhat_5_x86_64]" string => "$(pkg_name)-$(pkg_version)-$(pkg_release).el5.centos.x86_64.rpm";
       "pkg[centos_5_x86_64]" string => "$(pkg[redhat_5_x86_64])";
@@ -458,13 +512,14 @@ bundle common cfengine_package_names
       # 32bit RPMs
       "pkg[$(cfengine_master_software_content._rpm_dists)_$(cfengine_master_software_content._32bit_arches)]" string => "$(pkg_name)-$(pkg_version)-$(pkg_release).el5.centos.i386.rpm";
 
-      # Redhat/Centos/Oracle 6, SLES 12-15 use the same package
+      # Redhat/Centos/Oracle 6, SuSE 12-15, Opensuse Leap 15 use the same package
 
       "pkg[redhat_6_x86_64]" string => "$(pkg_name)-$(pkg_version)-$(pkg_release).el6.x86_64.rpm";
       "pkg[centos_6_x86_64]" string => "$(pkg[redhat_6_x86_64])";
       "pkg[oracle_6_x86_64]" string => "$(pkg[redhat_6_x86_64])";
       "pkg[SuSE_12_x86_64]" string => "$(pkg[redhat_6_x86_64])";
       "pkg[SuSE_15_x86_64]" string => "$(pkg[redhat_6_x86_64])";
+      "pkg[opensuse_leap_15_x86_64]" string => "$(pkg[redhat_6_x86_64])";
 
       # Redhat/Centos/Oracle 7 use the same package
       "pkg[redhat_7_x86_64]" string => "$(pkg_name)-$(pkg_version)-$(pkg_release).el7.x86_64.rpm";
@@ -476,27 +531,42 @@ bundle common cfengine_package_names
       "pkg[centos_8_x86_64]" string => "$(pkg[redhat_8_x86_64])";
       "pkg[oracle_8_x86_64]" string => "$(pkg[redhat_8_x86_64])";
 
+      # Redhat/Centos/Oracle 8 use the same package
+      "pkg[redhat_9_x86_64]" string => "$(pkg_name)-$(pkg_version)-$(pkg_release).el9.x86_64.rpm";
+      "pkg[centos_9_x86_64]" string => "$(pkg[redhat_9_x86_64])";
+      "pkg[oracle_9_x86_64]" string => "$(pkg[redhat_9_x86_64])";
+
+
       # 64bit Debian
 
       "pkg[debian_7_x86_64]"  string => "$(pkg_name)_$(pkg_version)-$(pkg_release).debian7_amd64.deb";
       "pkg[debian_8_x86_64]"  string => "$(pkg_name)_$(pkg_version)-$(pkg_release).debian8_amd64.deb";
       "pkg[debian_9_x86_64]"  string => "$(pkg_name)_$(pkg_version)-$(pkg_release).debian9_amd64.deb";
       "pkg[debian_10_x86_64]" string => "$(pkg_name)_$(pkg_version)-$(pkg_release).debian10_amd64.deb";
+      "pkg[debian_11_x86_64]" string => "$(pkg_name)_$(pkg_version)-$(pkg_release).debian11_amd64.deb";
 
       # 64bit Ubuntu
       "pkg[ubuntu_14_x86_64]" string => "$(pkg_name)_$(pkg_version)-$(pkg_release).ubuntu14_amd64.deb";
       "pkg[ubuntu_16_x86_64]" string => "$(pkg_name)_$(pkg_version)-$(pkg_release).ubuntu16_amd64.deb";
       "pkg[ubuntu_18_x86_64]" string => "$(pkg_name)_$(pkg_version)-$(pkg_release).ubuntu18_amd64.deb";
+      "pkg[ubuntu_20_x86_64]" string => "$(pkg_name)_$(pkg_version)-$(pkg_release).ubuntu20_amd64.deb";
+      "pkg[ubuntu_22_x86_64]" string => "$(pkg_name)_$(pkg_version)-$(pkg_release).ubuntu22_amd64.deb";
+
+      # aarch64 Ubuntu
+      "pkg[ubuntu_22_arm_64]" string => "$(pkg_name)_$(pkg_version)-$(pkg_release).ubuntu22_arm64.deb";
+
+      # aarch64 Debian
+      "pkg[debian_11_arm_64]" string => "$(pkg_name)_$(pkg_version)-$(pkg_release).debian11_arm64.deb";
 
       # 32bit DEBs
-
       "pkg[$(cfengine_master_software_content._deb_dists)_$(cfengine_master_software_content._32bit_arches)]" string => "$(pkg_name)_$(pkg_version)-$(pkg_release).debian7_i386.deb";
 
       # Windows
       "pkg[windows_x86_64]" string => "$(pkg_name)-$(pkg_version)-$(pkg_release)-x86_64.msi";
       "pkg[windows_i686]" string => "$(pkg_name)-$(pkg_version)-$(pkg_release)-i686.msi";
+
       "my_pkg"
-        string => "$(pkg[$(sys.flavor)_$(sys.arch)])",
+        string => "$(pkg[$(cfengine_software.package_dir)])",
         comment => "The package name for the currently executing platform.";
 
   reports:
@@ -529,6 +599,10 @@ bundle agent cfengine_master_software_content
       "dir[centos_5_x86_64]" string => "$(dir[redhat_5_x86_64])";
       "dir[oracle_5_x86_64]" string => "$(dir[redhat_5_x86_64])";
       "dir[SuSE_11_x86_64]" string => "$(dir[redhat_5_x86_64])";
+      "pkg[SuSE_12_x86_64]" string => "$(pkg[redhat_6_x86_64])";
+      "pkg[SuSE_15_x86_64]" string => "$(pkg[redhat_6_x86_64])";
+      "pkg[opensuse_leap_15_x86_64]" string => "$(pkg[redhat_6_x86_64])";
+
 
       # All 32bit rpms use the same package
       "_rpm_dists" slist => { "redhat_5", "redhat_6", "redhat_7",
@@ -552,16 +626,26 @@ bundle agent cfengine_master_software_content
       "dir[centos_8_x86_64]" string => "$(dir[redhat_8_x86_64])";
       "dir[oracle_8_x86_64]" string => "$(dir[redhat_8_x86_64])";
 
+      # Redhat/Centos/Oracle 9 use the same package
+      "dir[redhat_9_x86_64]" string => "agent_rhel9_x86_64";
+      "dir[centos_9_x86_64]" string => "$(dir[redhat_9_x86_64])";
+      "dir[oracle_9_x86_64]" string => "$(dir[redhat_9_x86_64])";
+
       # Debian
       "dir[debian_7_x86_64]" string => "agent_deb_x86_64";
       "dir[debian_8_x86_64]" string => "agent_debian8_x86_64";
       "dir[debian_9_x86_64]" string => "agent_debian9_x86_64";
       "dir[debian_10_x86_64]" string => "agent_debian10_x86_64";
+      "dir[debian_11_x86_64]" string => "agent_debian11_x86_64";
+      "dir[debian_11_arm_64]" string => "agent_debian11_arm_64";
 
       # Ubuntu
       "dir[ubuntu_14_x86_64]" string => "agent_ubuntu14_x86_64";
       "dir[ubuntu_16_x86_64]" string => "agent_ubuntu16_x86_64";
       "dir[ubuntu_18_x86_64]" string => "agent_ubuntu18_x86_64";
+      "dir[ubuntu_20_x86_64]" string => "agent_ubuntu20_x86_64";
+      "dir[ubuntu_22_x86_64]" string => "agent_ubuntu22_x86_64";
+      "dir[ubuntu_22_arm_64]" string => "agent_ubuntu22_arm_64";
 
       # All 32bit debs use the same package
       "_deb_dists" slist => { "debian_4", "debian_5", "debian_6",
@@ -570,6 +654,10 @@ bundle agent cfengine_master_software_content
                               "ubuntu_18" };
 
       "dir[$(_deb_dists)_$(_32bit_arches)]" string => "agent_deb_i386";
+
+      # Windows
+      "dir[windows_x86_64]" string => "windows_x86_64";
+      "dir[windows_i686]"   string => "windows_i686";
 
       "platform_dir" slist => getindices( dir );
       "download_dir" string => "$(sys.workdir)/master_software_updates";
@@ -738,7 +826,14 @@ body classes u_if_else(yes,no)
 body common control
 # @brief Common control for standalone self upgrade
 {
-      version => "CFEngine Standalone Self Upgrade 3.18.1";
+      version => "CFEngine Standalone Self Upgrade 3.18.5";
+
+
+    control_common_tls_min_version_defined::
+        tls_min_version => "$(default:def.control_common_tls_min_version)"; # See also: allowtlsversion in body server control
+
+    control_common_tls_ciphers_defined::
+        tls_ciphers => "$(default:def.control_common_tls_ciphers)"; # See also: allowciphers in body server control
 
     (debian|ubuntu)::
       package_inventory => { $(package_module_knowledge.platform_default) };
@@ -950,9 +1045,9 @@ body package_method u_generic(repo)
       # Redirecting the output to '/dev/null' below makes sure 'geninstall' has
       # its stdout open even if the 'cf-agent' process that started it
       # terminates (e.g. gets killed).
-        package_add_command        => "/usr/bin/rm -f $(repo)/.toc && /usr/sbin/geninstall -IacgXNY -d $(repo) cfengine.cfengine-nova > /dev/null$";
-        package_update_command     => "/usr/bin/rm -f $(repo)/.toc && /usr/sbin/geninstall -IacgXNY -d $(repo) cfengine.cfengine-nova > /dev/null$";
-        package_delete_command     => "/usr/sbin/installp -ug cfengine.cfengine-nova$";
+        package_add_command        => "/usr/bin/rm -f $(repo)/.toc && /usr/sbin/geninstall -IacgXNY -d $(repo) cfengine-nova > /dev/null$";
+        package_update_command     => "/usr/bin/rm -f $(repo)/.toc && /usr/sbin/geninstall -IacgXNY -d $(repo) cfengine-nova > /dev/null$";
+        package_delete_command     => "/usr/sbin/installp -ug cfengine-nova$";
 
       # Internal version comparison model doesn't work for W.X.Y.Z
         package_version_less_command => "$(sys.bindir)/rpmvercmp '$(v1)' lt '$(v2)'";

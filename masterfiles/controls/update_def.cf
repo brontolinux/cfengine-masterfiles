@@ -7,7 +7,8 @@ bundle common update_def
   vars:
     any::
 
-      "current_version" string => "3.18.1";
+      "current_version" string => "3.18.5";
+      "current_release" string => "1";
 
       # MPF Controls
 
@@ -65,10 +66,17 @@ bundle common update_def
                            not(isvariable("input_name_patterns"))),
         meta => { "defvar" };
 
-      # the permissions for your masterfiles, which will propagate to inputs
-      "masterfiles_perms_mode" string => "0600",
-      handle => "common_def_vars_masterfiles_perms_mode",
-      meta => { "defvar" };
+      # the permissions for your masterfiles files (not dirs), which will propagate to inputs
+      "masterfiles_perms_mode_not_dir" -> { "CFE-951" }
+        string => "0600",
+        handle => "common_def_vars_masterfiles_perms_mode_not_dir",
+        meta => { "defvar" };
+
+      "masterfiles_perms_mode_dirs" -> { "CFE-951" }
+        string => "0700",
+        handle => "common_def_vars_masterfiles_perms_mode_dirs",
+        meta => { "defvar" };
+
 
       "dc_scripts" string => "$(sys.workdir)/httpd/htdocs/api/dc-scripts",
       comment => "Directory where VCS scripts are located on Enterprise Hub";
@@ -131,7 +139,32 @@ bundle common update_def
                           "true",
                           "false");
 
+      "control_agent_agentfacility" -> { "ENT-10209" }
+        string => "",
+        if => not( isvariable ( "default:def.control_agent_agentfacility" ));
+
+
   classes:
+
+      "control_agent_agentfacility_configured" -> { "ENT-10209" }
+        expression => regcmp( "LOG_(USER|DAEMON|LOCAL[0-7])",
+                              $(control_agent_agentfacility) ),
+        comment => concat( "If default:def.control_agent_agentfacility is a",
+                           " valid setting, we want to use it in body agent",
+                           " control for setting agentfacility" );
+
+
+      "control_common_tls_min_version_defined" -> { "ENT-10198" }
+        expression => isvariable( "default:def.control_common_tls_min_version"),
+        comment => concat( "If default:def.control_common_tls_min_version is defined then",
+                           " it's value will be used for the minimum version in outbound",
+                           " connections. Else the binary default will be used.");
+
+      "control_common_tls_ciphers_defined" -> { "ENT-10198" }
+        expression => isvariable( "default:def.control_common_tls_ciphers"),
+        comment => concat( "If default:def.control_common_tls_ciphers is defined then",
+                           " it's value will be used for the set of tls ciphers allowed",
+                           " for outbound connections. Else the binary default will be used.");
 
       # Trigger binary upgrade from policy hub
       # Disable by default

@@ -37,6 +37,10 @@ bundle common def
         string => "localhost",
         if => not(isvariable("smtpserver"));
 
+      "control_executor_mailmaxlines" -> { "ENT-9614" }
+        int => "30",
+        if => not( isvariable( "control_executor_mailmaxlines" ));
+
       # List here the IP masks that we grant access to on the server
 
       "acl"
@@ -175,6 +179,10 @@ bundle common def
         comment => "The control body has a variable, so a valid list must be defined or the agent will error",
         if => not( isvariable( $(this.promiser) ));
 
+      "control_agent_agentfacility" -> { "ENT-10209" }
+        string => "",
+        if => not( isvariable ( $(this.promiser) ));
+
       "control_agent_abortbundleclasses" -> { "ENT-4823" }
         slist => { "abortbundle" },
         comment => "The control body has a variable, so a valid list must be defined or the agent will error",
@@ -226,18 +234,79 @@ bundle common def
         int => "200",
         if => not( isvariable( "control_server_maxconnections" ) );
 
+      #+begin_src def.control_agent_environment_vars
+      # This configures environment_vars in body agent control
+
+      # It's configurable without having to modify policy, so the default values
+      # are only applied if the variable is not already defined (via augments).
+
+      # Platform defaults are set first, and the global default is set last so
+      # that global default does not override a platform specific setting since
+      # the promises are only applied if the variable is not already defined
+      # which is reverse of what you might normally do in CFEngine since
+      # typically the last promise wins.
+
+  classes:
+
+      "control_agent_agentfacility_configured" -> { "ENT-10209" }
+        expression => regcmp( "LOG_(USER|DAEMON|LOCAL[0-7])",
+                              $(control_agent_agentfacility) ),
+        comment => concat( "If default:def.control_agent_agentfacility is a",
+                           " valid setting, we want to use it in body agent",
+                           " control for setting agentfacility" );
+
+      "_control_agent_environment_vars_validated" -> { "CFE-3927" }
+        and => {
+                 # The variable must be defined
+                 isvariable( "default:def.control_agent_environment_vars" ),
+                 # The length of the variable must be greater than 0 (can't be an empty list)
+                 isgreaterthan( length( "default:def.control_agent_environment_vars" ), 0),
+                 # Each element of the list must be of the form KEY=VALUE
+                 every( ".+=.+", "default:def.control_agent_environment_vars"),
+                 # In 3.18 and greater we can validate the type of variable in use
+@if minimum_version(3.18.0)
+                 regcmp( "(policy slist|data array)", type( "default:def.control_agent_environment_vars", "true" ) ),
+@endif
+                 };
+
+      "control_server_allowciphers_defined" -> { "ENT-10182" }
+        expression => isvariable( "default:def.control_server_allowciphers"),
+        comment => concat( "If default:def.control_server_allowciphers is defined then",
+                           " it's value will be used for allowciphers in body server",
+                           " control. Else the binary default will be used.");
+
+      "control_server_allowtlsversion_defined" -> { "ENT-10182" }
+        expression => isvariable( "default:def.control_server_allowtlsversion"),
+        comment => concat( "If default:def.control_server_allowtlsversion is defined then",
+                           " it's value will be used for allowtlsversion in body server",
+                           " control. Else the binary default will be used.");
+
+  vars:
+
     debian::
-      "environment_vars"
-        handle => "common_def_vars_environment_vars",
-        comment => "Environment variables of the agent process. The values
-                    of environment variables are inherited by child commands.",
+
+      "control_agent_environment_vars_default" ->  { "CFE-3925" }
+        handle => "common_def_vars_debian_control_agent_environment_vars_default",
+        if => not( isvariable( "control_agent_environment_vars_default" ) ),
+        comment => "Set default environment variables for using Debian non-interactively",
         slist => {
                    "DEBIAN_FRONTEND=noninteractive",
                   # "APT_LISTBUGS_FRONTEND=none",
                   # "APT_LISTCHANGES_FRONTEND=none",
                  };
 
-      # End change #
+  any::
+
+      # Resolve the final state for environment vars if there is a default var
+      # or if there is a user extra and merge the defined entities
+      "control_agent_environment_vars" ->  { "CFE-3925" }
+        slist => { @(def.control_agent_environment_vars_default),
+                   @(def.control_agent_environment_vars_extra) },
+        policy => "ifdefined",
+        if => or( isvariable( "def.control_agent_environment_vars_default" ), # Protect against defining
+                  isvariable( "def.control_agent_environment_vars_extra" ));  # an empty variable
+
+      #+end_src Agent Environment Variables
 
     any::
       "dir_masterfiles" string => translatepath("$(sys.masterdir)"),
@@ -329,9 +398,10 @@ bundle common def
 
       "hub_log_files" slist =>
       {
-        "$(sys.workdir)/httpd/logs/access_log", # Mission Portal
-        "$(sys.workdir)/httpd/logs/error_log", # Mission Portal
-        "/var/log/postgresql.log",
+        "$(cfe_internal_hub_vars.access_log)",      # Mission Portal
+        "$(cfe_internal_hub_vars.error_log)",       # Mission Portal
+        "$(cfe_internal_hub_vars.ssl_request_log)", # Mission Portal
+        "/var/log/postgresql.log",                  # PostgreSQL
       };
 
       "max_client_history_size" -> { "cf-hub", "CFEngine Enterprise" }
@@ -469,7 +539,7 @@ bundle common def
       "_have_control_agent_files_single_copy" -> { "CFE-3622"}
         expression => isvariable( "def.control_agent_files_single_copy" );
       "_have_control_executor_runagent_socket_allow_users"
-        expression => isvariable( "def.control_executor_runagent_socket_allow_users" );
+        expression => some( ".+", "def.control_executor_runagent_socket_allow_users" );
 
       "cfengine_recommendations_enabled"
         expression => "!cfengine_recommendations_disabled";
@@ -597,6 +667,7 @@ bundle common inventory_control
     !freebsd::
 
       "dmidecoder" string => "/usr/sbin/dmidecode";
+      "proc_device_tree" string => "/proc/device-tree";
 
   classes:
       # setting this disables all the inventory modules except package_refresh
@@ -610,10 +681,15 @@ bundle common inventory_control
       "disable_inventory_lsb" expression => "disable_inventory";
       "disable_inventory_lsb" not => fileexists($(lsb_exec));
 
+      # If we have /proc/device-tree we should likely disable dmi completely
+      # as of 2022 systems with dmi dont have device-tree and vice versa.
+      "have_proc_device_tree" expression => fileexists($(proc_device_tree));
+
       # by default disable the dmidecode inventory if the general
       # inventory is disabled or the binary does not exist.  Note that
       # typically this is a very fast binary.
       "disable_inventory_dmidecode" expression => "disable_inventory";
+      "disable_inventory_dmidecode" expression => "have_proc_device_tree";
       "disable_inventory_dmidecode" not => fileexists($(dmidecoder));
 
       # by default disable the LLDP inventory if the general inventory
