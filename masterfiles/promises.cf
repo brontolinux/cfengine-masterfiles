@@ -87,19 +87,14 @@ body common control
                   "services/main.cf",
       };
 
-      version => "CFEngine Promises.cf 3.18.1";
+      version => "CFEngine Promises.cf 3.18.5";
 
       # From 3.7 onwards there is a new package promise implementation using package
       # modules in which you MUST provide package modules used to generate
       # software inventory reports. You can also provide global default package module
       # instead of specifying it in all package promises.
-    (debian).!disable_inventory_package_refresh::
+    (debian|redhat|centos|suse|sles|opensuse|amazon_linux).cfe_python_for_package_modules_supported.!disable_inventory_package_refresh::
           package_inventory => { $(package_module_knowledge.platform_default) };
-
-      # We only define pacakge_invetory on redhat like systems that have a
-      # python version that works with the package module.
-    (redhat|centos|suse|sles|opensuse|amazon_linux).cfe_yum_package_module_supported.!disable_inventory_package_refresh::
-        package_inventory => { $(package_module_knowledge.platform_default) };
 
     (debian|redhat|suse|sles|opensuse|amazon_linux)::
           package_module => $(package_module_knowledge.platform_default);
@@ -125,6 +120,12 @@ body common control
         ignore_missing_inputs => "$(def.control_common_ignore_missing_inputs)";
 
 
+    control_common_tls_min_version_defined::
+        tls_min_version => "$(default:def.control_common_tls_min_version)"; # See also: allowtlsversion in body server control
+
+    control_common_tls_ciphers_defined::
+        tls_ciphers => "$(default:def.control_common_tls_ciphers)"; # See also: allowciphers in body server control
+
 }
 
 bundle common inventory
@@ -134,8 +135,6 @@ bundle common inventory
 #
 # Inventory bundles are simply common bundles loaded before anything
 # else in promises.cf
-#
-# Tested to work properly against 3.5.x
 {
   classes:
       "other_unix_os" expression => "!(windows|macos|linux|freebsd|aix)";
@@ -382,7 +381,7 @@ bundle common services_autorun
         if => "services_autorun_inputs";
 
       "DEBUG $(this.bundle): Services Autorun (Bundles & Inputs) Enabled"
-        if => "services_autorun";
+        if => "services_autorun_inputs.services_autorun_bundles";
 
       "DEBUG $(this.bundle): adding input='$(inputs)'"
         if => isvariable("inputs");

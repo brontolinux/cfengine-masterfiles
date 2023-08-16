@@ -16,6 +16,10 @@ bundle common inventory_any
         string => "$(data[releaseId])",
         meta => { "inventory", "attribute_name=Policy Release Id" };
 
+      "policy_version" -> { "ENT-9806" }
+        string => "$(default:control_common.version)",
+        meta => { "inventory", "attribute_name=CFEngine policy version" };
+
   reports:
       "DEBUG|DEBUG_$(this.bundle)"::
         "DEBUG $(this.bundle): Inventory Policy Release Id=$(id)";
@@ -58,8 +62,10 @@ bundle agent inventory_autorun
       handle => "cfe_internal_autorun_inventory_fstab";
 
     !disable_inventory_mtab::
-      "mtab" usebundle => cfe_autorun_inventory_mtab(),
-      handle => "cfe_internal_autorun_inventory_mtab";
+      "mtab" -> { "ENT-8338" }
+        usebundle => cfe_autorun_inventory_mtab(),
+        handle => "cfe_internal_autorun_inventory_mtab",
+        action => default:immediate;
 
     !disable_inventory_dmidecode::
       "dmidecode" usebundle => cfe_autorun_inventory_dmidecode(),
@@ -455,6 +461,8 @@ bundle agent cfe_autorun_inventory_proc_cpuinfo
       # Ref: redmine#7088 https://dev.cfengine.com/issues/7088
       "have_cpuinfo_cpu_cores" expression => strcmp("cpu cores", "$(default:cfe_autorun_inventory_proc.cpuinfo_array[$(default:cfe_autorun_inventory_proc.cpuinfo_idx)][0])");
       "have_cpuinfo_model_name" expression => strcmp("model name", "$(default:cfe_autorun_inventory_proc.cpuinfo_array[$(default:cfe_autorun_inventory_proc.cpuinfo_idx)][0])");
+      "have_cpuinfo_hardware" expression => strcmp("Hardware", "$(default:cfe_autorun_inventory_proc.cpuinfo_array[$(default:cfe_autorun_inventory_proc.cpuinfo_idx)][0])");
+      "have_cpuinfo_revision" expression => strcmp("Revision", "$(default:cfe_autorun_inventory_proc.cpuinfo_array[$(default:cfe_autorun_inventory_proc.cpuinfo_idx)][0])");
 
   vars:
     _have_cpuinfo::
@@ -465,6 +473,14 @@ bundle agent cfe_autorun_inventory_proc_cpuinfo
       "cpuinfo_cpu_model_name"
         string => "$(default:cfe_autorun_inventory_proc.cpuinfo[model name])",
         if => "have_cpuinfo_model_name";
+
+      "cpuinfo_hardware"
+        string => "$(default:cfe_autorun_inventory_proc.cpuinfo[Hardware])",
+        if => "have_cpuinfo_hardware";
+
+      "cpuinfo_revision"
+        string => "$(default:cfe_autorun_inventory_proc.cpuinfo[Revision])",
+        if => "have_cpuinfo_revision";
 
     # We need to be able to count the number of unique physical id lines in
     # /proc/cpu in order to get a physical processor count.
@@ -521,6 +537,8 @@ bundle agent cfe_autorun_inventory_cpuinfo
 {
   classes:
     "_have_proc_cpu_model_name" expression => isvariable("default:cfe_autorun_inventory_proc_cpuinfo.cpuinfo_cpu_model_name");
+    "_have_proc_hardware" expression => isvariable("default:cfe_autorun_inventory_proc_cpuinfo.cpuinfo_hardware");
+    "_have_proc_revision" expression => isvariable("default:cfe_autorun_inventory_proc_cpuinfo.cpuinfo_revision");
     "_have_proc_cpu_physical_cores" expression => isvariable("default:cfe_autorun_inventory_proc_cpuinfo.cpuinfo_physical_cores");
 
     # We only accept dmidecode values that don't look like cfengine variables,
@@ -539,6 +557,15 @@ bundle agent cfe_autorun_inventory_cpuinfo
       "cpu_model"
         string => "$(default:cfe_autorun_inventory_proc_cpuinfo.cpuinfo_cpu_model_name)",
         meta => { "inventory", "attribute_name=CPU model", "derived-from=$(default:cfe_autorun_inventory_proc.files[cpuinfo])" };
+
+    _have_proc_hardware::
+      "cpu_model"
+        string => "$(default:cfe_autorun_inventory_proc_cpuinfo.cpuinfo_hardware)",
+        meta => { "inventory", "attribute_name=CPU model", "derived-from=$(default:cfe_autorun_inventory_proc.files[cpuinfo])" };
+    _have_proc_revision::
+      "system_product_name"
+        string => "$(default:cfe_autorun_inventory_proc_cpuinfo.cpuinfo_revision)",
+        meta => { "inventory", "attribute_name=System product name", "derived-from=$(default:cfe_autorun_inventory_proc.files[cpuinfo])" };
 
     _have_dmidecode_cpu_model_name.!_have_proc_cpu_model_name::
       "cpu_model"
@@ -698,6 +725,10 @@ bundle agent cfe_aws_ec2_metadata_from_cache
 
 bundle agent cfe_autorun_inventory_mtab
 # @brief Do mtab inventory
+# @inventory `File system` - File system in use by active mounts
+# @inventory `Mount point` - Mount points that have active mounts
+# @class `have_mount_FSTYPE_MOUNTPOINT` - Namespace scoped class for each file system mount point. For example: `have_mount_ext4__var` for a `ext4` file system mounted at `/var`
+# @class `have_mount_FSTYPE` - if there is any mounted file system formatted with `ext4`
 #
 # The mtab format is simple: each line looks like this format:
 # `/dev/sda1 / ext4 rw,noatime,data=ordered 0 0` (in order: `DEV
@@ -708,14 +739,33 @@ bundle agent cfe_autorun_inventory_mtab
 {
   vars:
     have_mtab::
-      "mount_count" int =>  readstringarrayidx("mounts",
-                                               $(inventory_control.mtab),
-                                               "\s*#[^\n]*",
-                                               "\s+",
-                                               500,
-                                               50000);
+      "mounts"
+        meta => { "noreport" },
+        data => data_readstringarrayidx( $(inventory_control.mtab),
+                                         "\s*#[^\n]*",
+                                         "\s+",
+                                         inf,
+                                         inf);
+
+      "mount_count"
+        int => length( mounts );
 
       "idx" slist => getindices("mounts");
+
+      "inventory_mount_point[$(idx)]" -> { "ENT-8338" }
+        string => "$(mounts[$(idx)][1])",
+        meta => { "inventory", "attribute_name=Mount point" };
+
+      "inventory_mounted_fs[$(idx)]"
+        string => "$(mounts[$(idx)][2])",
+        meta => { "noreport" };
+
+      "slist_unique_fs_types"
+        slist => unique( sort( getvalues( inventory_mounted_fs ), lex ) );
+
+      "inventory_fs[$(slist_unique_fs_types)]" -> { "ENT-8338" }
+        string => "$(slist_unique_fs_types)",
+        meta => { "inventory", "attribute_name=File system" };
 
   classes:
       "have_mtab" expression => fileexists($(inventory_control.mtab));
@@ -920,7 +970,7 @@ bundle agent cfe_autorun_inventory_dmidecode
 
     # Redhat 4 can support the -s option to dmidecode if
     # kernel-utils-2.4-15.el4 or greater is installed.
-    have_dmidecode.!(redhat_4|redhat_3)::
+    have_dmidecode.!(redhat_4|redhat_3).!have_proc_device_tree::
       "dmi[$(dmivars)]" string => execresult("$(decoder) -s $(dmivars)",
                                              "useshell"),
       unless => isvariable("dmi[$(dmivars)]"), # If already defined from sysfs, don't run dmidecode

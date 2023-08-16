@@ -96,6 +96,13 @@ bundle agent config
                        strcmp( "push_over_rsync", "$(data[remote_hubs][$(remotes)][transport][mode])"));
 
     am_feeder::
+      # List of superhub hostkeys for use with dump process
+      "superhubs[$(remotes)]" string => "$(data[remote_hubs][$(remotes)][hostkey])",
+          if => and( strcmp( "on", "$(data[remote_hubs][$(remotes)][target_state])" ),
+                     strcmp( "superhub", "$(data[remote_hubs][$(remotes)][role])" ),
+                     strcmp( "pull_over_rsync", "$(data[remote_hubs][$(remotes)][transport][mode])"));
+      "superhub_hostkeys" string => join(" ", getvalues(superhubs));
+
       # Public key(s) of enabled pulling superhub(s) need(s) to be trusted (on a feeder)
       "pubkey[$(remotes)]" string => "$(data[remote_hubs][$(remotes)][transport][ssh_pubkey])",
             if => and( strcmp( "on", "$(data[remote_hubs][$(remotes)][target_state])" ),
@@ -169,6 +176,56 @@ bundle agent config
       "I'm a transporter!";
     am_paused.(default:DEBUG|DEBUG_config)::
       "I'm paused so won't do any import/dump";
+}
+
+bundle agent distributed_cleanup_dependencies
+# @brief warn if python3 and urllib3 required dependencies are not installed
+# if cfengine_mp_fr_enable_distributed_cleanup class is defined
+{
+  vars:
+    debian|ubuntu|redhat_8|centos_8::
+      "packages" slist => { "python3", "python3-urllib3" };
+
+    centos_7::
+      "packages" slist => { "python3" };
+
+  classes:
+    (redhat_6|centos_6)::
+      "cfengine_mp_fr_distributed_cleanup_python3_installed"
+        expression => returnszero(
+          "$(sys.bindir)/cfengine-selected-python --version | grep -q ' 3.'",
+          "useshell"
+        );
+
+    (redhat_6|centos_6|redhat_7|centos_7)::
+      "cfengine_mp_fr_distributed_cleanup_urllib3_installed"
+        expression => returnszero(
+          "echo 'import urllib3' | $(sys.bindir)/cfengine-selected-python 2>/dev/null",
+          "useshell"
+        );
+
+  packages:
+    debian|ubuntu::
+      "$(packages)"
+        policy => "present",
+        classes => default:results("bundle", "cfengine_mp_fr_distributed_cleanup_packages"),
+        action => default:policy ( "warn" ),
+        package_module => default:apt_get;
+
+    redhat.!(centos_6|redhat_6)::
+      "$(packages)"
+        policy => "present",
+        classes => default:results("bundle", "cfengine_mp_fr_distributed_cleanup_packages"),
+        action => default:policy ( "warn" ),
+        package_module => default:yum;
+
+  reports:
+    (redhat_6|centos_6).!cfengine_mp_fr_distributed_cleanup_python3_installed::
+      "error: python3 is required for distributed cleanup utility. On this platform it is recommened you install python3 from source (https://docs.python.org/3.10/using/unix.html#building-python)";
+    (redhat_6|centos_6).!cfengine_mp_fr_distributed_cleanup_urllib3_installed::
+      "error: python3 module urllib3 is required for distributed cleanup utility. On this platform it is recommend you install via pip3 after installing python3 from source";
+    (redhat_7|centos_7).!cfengine_mp_fr_distributed_cleanup_urllib3_installed::
+      "error: python3 module urllib3 is required for distributed cleanup utility. On this platform please install with the command `pip3 install urllib3`";
 }
 
 bundle agent semanage_installed
@@ -260,10 +317,19 @@ bundle agent transport_user
   files:
     "$(create_files)"
       create => "true";
-    "$(home)/."
+
+    "$(home)/." -> { "CFE-951" }
       depth_search => default:recurse_with_base("inf"),
-      file_select => default:all,
-      perms => default:mog( "600", $(user), "root" );
+      file_select => default:dirs,
+      perms => default:mog( "700", $(user), "root" ),
+      comment => "The transport users home directory and children should be accessible only by the transport user itself.";
+
+    "$(home)/." -> { "CFE-951" }
+      depth_search => default:recurse_with_base("inf"),
+      file_select => default:not_dir,
+      perms => default:mog( "600", $(user), "root" ),
+      comment => "The files within the transport users home directory should be readable and writable by the transport user";
+
     "$(ssh_auth_keys)"
       create => "true",
       handle => "ssh_auth_keys_configured",
@@ -316,6 +382,12 @@ bundle agent clean_when_off
   vars:
     "user" string => "$(cfengine_enterprise_federation:transport_user.user)";
     "home" string => "$(cfengine_enterprise_federation:transport_user.home)";
+@if minimum_version(3.15)
+      "remote_hubs_table_row_count"
+        string => execresult(`$(sys.bindir)/psql cfsettings --quiet --tuples-only --command "SELECT COUNT(*) FROM remote_hubs" 2>/dev/null`, useshell);
+      "federated_reporting_settings_table_row_count"
+        string => execresult(`$(sys.bindir)/psql cfsettings --quiet --tuples-only --command "SELECT COUNT(*) FROM federated_reporting_settings" 2>/dev/null`, useshell);
+@endif
 
   users:
     "$(user)"
@@ -325,6 +397,9 @@ bundle agent clean_when_off
       "$(cfengine_enterprise_federation:config.path_setup_status)" -> { "ENT-7233" }
         comment => "We must remove this file for Mission Portal to understand that the federation is not configured",
         delete => default:tidy;
+      "$(cfengine_enterprise_federation:config.path)" -> { "ENT-7969" }
+         comment => "We must remove this file for Mission Portal to understand that the federation is not configured",
+         delete => default:tidy;
 
   methods:
     "rm_rf_cftransport_home_dir" usebundle => default:rm_rf("$(home)");
@@ -333,13 +408,16 @@ bundle agent clean_when_off
     selinux_enabled.default:_stdlib_path_exists_semanage::
       "has_cftransport_fcontext" expression => returnszero("$(paths.semanage) fcontext -l | grep $(home)", "useshell");
 
-  commands:
-      am_superhub::
-      # Oh, the humanity! Where for art thou databases: promises for psql!
-      `$(sys.bindir)/psql cfsettings -c "TRUNCATE TABLE remote_hubs"` -> { "ENT-7233" };
-      `$(sys.bindir)/psql cfsettings -c "TRUNCATE TABLE federated_reporting_settings" -> { "ENT-7233" }`;
 
-      # _stdlib_path_exists_<command> and paths.<command> are defined is masterfiles/lib/paths.cf
+  commands:
+      # Oh, the humanity! Where for art thou databases: promises for psql!
+      `$(sys.bindir)/psql cfsettings --quiet --command "TRUNCATE TABLE remote_hubs"` -> { "ENT-7233" }
+        if => isgreaterthan( "$(remote_hubs_table_row_count)", "0" );
+
+      `$(sys.bindir)/psql cfsettings --quiet --command "TRUNCATE TABLE federated_reporting_settings"` -> { "ENT-7233" }
+        if => isgreaterthan( "$(federated_reporting_settings_table_row_count)", "0" );
+
+      # _stdlib_path_exists_<command> and paths.<command> are defined in masterfiles/lib/paths.cf
     selinux_enabled.default:_stdlib_path_exists_semanage.has_cftransport_fcontext::
       "$(paths.semanage) fcontext -d '$(home)/.ssh(/.*)?'";
 
@@ -369,6 +447,10 @@ bundle agent federation_manage_files
       string => "$(cfengine_enterprise_federation:config.transport_user)";
     "login" data => parsejson('{"login":"$(cfengine_enterprise_federation:config.login)"}');
     "feeder_username" data => parsejson('{"feeder_username":"$(cfengine_enterprise_federation:config.transport_user)"}');
+    "superhub_hostkeys" string => ifelse( isvariable("cfengine_enterprise_federation:config.superhub_hostkeys"),
+                                        "$(cfengine_enterprise_federation:config.superhub_hostkeys)",
+                                        "" );
+    "this_hostkey" data => parsejson('{"this_hostkey":"$(default:sys.key_digest)"}');
     "feeder" data => parsejson('{"feeder": "$(sys.key_digest)"}');
     "cf_version" data => parsejson('{"cf_version":"$(sys.cf_version)"}');
     "workdir" data => parsejson('{"workdir":"$(sys.workdir)"}');
@@ -378,20 +460,31 @@ bundle agent federation_manage_files
   files:
     enterprise_edition.(policy_server|am_policy_hub)::
       # Both cfpache and $(transport_user) need permission so adding o+x here
-      "$(cfengine_enterprise_federation:config.federation_dir)/."
+      "$(cfengine_enterprise_federation:config.federation_dir)/." -> { "CFE-951" }
         create => "true",
-        perms => default:mog( "661", "root", "root" );
+        perms => default:mog( "755", "root", "cfapache" );
+
       "$(cfengine_enterprise_federation:config.federation_dir)/cfapache/."
         create => "true",
-        perms => default:mog( "600", "cfapache", "root" );
-      "$(cfengine_enterprise_federation:config.federation_dir)/cfapache/."
+        perms => default:mog( "700", "cfapache", "root" );
+
+      "$(cfengine_enterprise_federation:config.federation_dir)/cfapache/." -> { "CFE-951" }
         depth_search => default:recurse_with_base("inf"),
-        file_select => default:all,
-        perms => default:mog( "600", "cfapache", "root" );
+        file_select => default:dirs,
+        perms => default:mog( "700", "cfapache", "root" ),
+        comment => "The cfapache home directory and children need to be accessible by the web-server";
+
+      "$(cfengine_enterprise_federation:config.federation_dir)/cfapache/." -> { "CFE-951" }
+        depth_search => default:recurse_with_base("inf"),
+        file_select => default:not_dir,
+        perms => default:mog( "600", "cfapache", "root" ),
+        comment => "Files within the cfapache home directory need to be readable and writable by the web server.";
+
     enabled::
-      "$(cfengine_enterprise_federation:config.bin_dir)/."
+      "$(cfengine_enterprise_federation:config.bin_dir)/." -> { "CFE-951" }
         create => "true",
-        perms => default:mog( "660", "root", "$(transport_user)" );
+        perms => default:mog( "0770", "root", "$(transport_user)" );
+
     am_superhub::
       "$(cfengine_enterprise_federation:config.federation_dir)/superhub/."
         create => "true",
@@ -425,6 +518,8 @@ bundle agent federation_manage_files
         template_data => mergedata(@(login),
                                    @(feeder_username),
                                    @(feeder),
+                                   parsejson('{"superhub_hostkeys": "$(superhub_hostkeys)"}'),
+                                   @(this_hostkey),
                                    @(cf_version),
                                    @(handle_duplicates),
                                    parsejson('{"inventory_refresh_cmd": ""}')),
@@ -457,7 +552,7 @@ bundle agent federation_manage_files
         perms => default:mog( "600", "root", "root" );
 
     am_transporter::
-      "$(cfengine_enterprise_federation:config.bin_dir)/transport.sh"
+      "$(cfengine_enterprise_federation:config.bin_dir)/transport.sh" -> { "CFE-951" }
         copy_from => default:local_dcp( "$(this.promise_dirname)/../../../templates/federated_reporting/transport.sh" ),
         perms => default:mog( "500", "$(transport_user)", "root" );
 
@@ -496,18 +591,40 @@ bundle agent federation_manage_files
 
 bundle agent postgres_config
 # @brief Customize postgres config for superhub
+# @variable cfengine_enterprise_federation:postgres_config.shared_buffers - Sets the maximum number of locks per transaction.
+# @variable cfengine_enterprise_federation:postgres_config.max_locks_per_transaction - Sets the maximum number of locks per transaction.
+# @variable cfengine_enterprise_federation:postgres_config.log_lock_waits - Logs long lock waits.
+# @variable cfengine_enterprise_federation:postgres_config.max_wal_size - Sets the WAL size that triggers a checkpoint.
+# @variable cfengine_enterprise_federation:postgres_config.checkpoint_timeout- Sets the maximum time between automatic WAL checkpoints.
 {
   vars:
     am_superhub::
-      "c[shared_buffers]"
-        string => "1GB",
+      "c[shared_buffers]" -> { "ENT-8617" }
+        string => ifelse( isvariable( "cfengine_enterprise_federation:postgres_config.shared_buffers"),
+                          $(cfengine_enterprise_federation:postgres_config.shared_buffers),
+                          "1GB"),
         comment => "Changing this setting requires restarting the database.";
-      "c[max_locks_per_transaction]"
-        string => "4000",
+      "c[max_locks_per_transaction]" -> { "ENT-8617" }
+        string => ifelse( isvariable( "cfengine_enterprise_federation:postgres_config.max_locks_per_transaction"),
+                          $(cfengine_enterprise_federation:postgres_config.max_locks_per_transaction),
+                          "4000"),
         comment => "Changing this setting requires restarting the database.";
-      "c[log_lock_waits]"
-        string => "on",
+      "c[log_lock_waits]" -> { "ENT-8617" }
+        string => ifelse( isvariable( "cfengine_enterprise_federation:postgres_config.log_lock_waits"),
+                          $(cfengine_enterprise_federation:postgres_config.log_lock_waits),
+                          "on"),
         comment => "Changing this setting requires restarting the database.";
+
+      "c[max_wal_size]" -> { "ENT-8617" }
+        string => ifelse( isvariable( "cfengine_enterprise_federation:postgres_config.max_wal_size"),
+                          $(cfengine_enterprise_federation:postgres_config.max_wal_size),
+                          "1GB");
+
+      "c[checkpoint_timeout]" -> { "ENT-8617" }
+        string => ifelse( isvariable( "cfengine_enterprise_federation:postgres_config.checkpoint_timeout"),
+                          $(cfengine_enterprise_federation:postgres_config.checkpoint_timeout),
+                          "5min");
+
   files:
     am_superhub::
       "$(sys.statedir)/pg/data/postgresql.conf"
@@ -516,7 +633,8 @@ bundle agent postgres_config
                                      "\s*=\s*",
                                      ".*",
                                      ""),
-        classes => default:results( "bundle", "postgresql_conf" );
+        classes => default:results( "bundle", "postgresql_conf" ),
+        if => fileexists( "$(sys.statedir)/pg/data/postgresql.conf" );
 
   commands:
     am_superhub.postgresql_conf_repaired.!systemd::
@@ -588,6 +706,7 @@ bundle agent data_transport
       "/bin/bash"
         arglist => {"$(cfengine_enterprise_federation:config.bin_dir)/transport.sh pull $(pull_args)"},
         contain => contain_transport_user;
+
     am_puller.!am_paused.default:cfengine_mp_fr_enable_distributed_cleanup::
       "/bin/bash"
         arglist => {"$(cfengine_enterprise_federation:config.bin_dir)/transfer_distributed_cleanup_items.sh $(pull_args)"},
@@ -670,7 +789,7 @@ bundle agent entry
       "CFEngine Enterprise Federation Configuration"
         handle => "config",
         usebundle => config;
-    am_off|config_not_exists::
+    am_policy_hub.(am_off|config_not_exists)::
       "CFEngine Enterprise Federation Transport Off"
         handle => "clean_when_off",
         usebundle => clean_when_off;
@@ -710,13 +829,17 @@ bundle agent entry
         depends_on => { "transport_user", "ensure_feeders" },
         usebundle => imported_data;
 
-    default:cfengine_mp_fr_enable_distributed_cleanup::
+    am_policy_hub.default:cfengine_mp_fr_enable_distributed_cleanup::
+      "Distributed Cleanup Dependencies"
+        handle => "distributed_cleanup_dependencies",
+        usebundle => "distributed_cleanup_dependencies";
       "Distributed Cleanup Setup"
         handle => "distributed_cleanup_setup",
-        depends_on => { "data_transport" },
+        depends_on => { "transport_user", "data_transport", "distributed_cleanup_dependencies" },
         usebundle => "distributed_cleanup_setup";
       "Distributed Federated Host Cleanup"
         handle => "distributed_cleanup",
+        if => "enabled.am_on.am_superhub.!am_paused",
         depends_on => { "imported_data", "distributed_cleanup_setup" },
         usebundle => distributed_cleanup_run;
 
@@ -773,11 +896,14 @@ bundle agent distributed_cleanup_setup
   files:
     am_superhub|am_feeder::
       "${distributed_cleanup_dir}/."
+        perms => default:mog( "700", "$(cfengine_enterprise_federation:config.transport_user)", "root" ),
         create => "true";
-      "${distributed_cleanup_dir}/${sys.host}.pub"
+      "${distributed_cleanup_dir}/${sys.fqhost}.pub"
+        perms => default:mog( "600", "$(cfengine_enterprise_federation:config.transport_user)", "root" ),
         copy_from => default:local_cp("${sys.workdir}/ppkeys/localhost.pub");
-      "${distributed_cleanup_dir}/${sys.host}.cert"
-        copy_from => default:local_cp("${sys.workdir}/httpd/ssl/certs/${sys.host}.cert");
+      "${distributed_cleanup_dir}/${sys.fqhost}.cert"
+        perms => default:mog( "600", "$(cfengine_enterprise_federation:config.transport_user)", "root" ),
+        copy_from => default:local_cp("${sys.workdir}/httpd/ssl/certs/${sys.fqhost}.cert");
 }
 
 bundle agent distributed_cleanup_run
@@ -790,7 +916,16 @@ bundle agent distributed_cleanup_run
     am_superhub.!am_paused.default:cfengine_mp_fr_enable_distributed_cleanup::
       "$(sys.bindir)/cfengine-selected-python"
         args => "$(cfengine_enterprise_federation:config.bin_dir)/distributed_cleanup.py",
-        arglist => { @(_arglist) };
+        arglist => { @(_arglist) },
+        unless => isvariable( "default:def.DISTRIBUTED_CLEANUP_SSL_CERT_DIR" );
+
+      "SSL_CERT_DIR=$(default:def.DISTRIBUTED_CLEANUP_SSL_CERT_DIR) $(sys.bindir)/cfengine-selected-python" -> { "ENT-8477", "ENT-8464" }
+        args => "$(cfengine_enterprise_federation:config.bin_dir)/distributed_cleanup.py",
+        arglist => { @(_arglist) },
+        if => isvariable( "default:def.DISTRIBUTED_CLEANUP_SSL_CERT_DIR"),
+        contain => default:in_shell,
+        comment => "When custom SSL certificates are used from the non default location we need to let the script know where to find them.";
+
 }
 
 body file control

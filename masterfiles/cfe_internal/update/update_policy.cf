@@ -62,8 +62,9 @@ bundle agent cfe_internal_update_policy
         usebundle => cfe_internal_update_policy_cpv;
 
     any::
-      "CMDB data update" -> { "ENT-6788" }
-        usebundle => cfe_internal_update_cmdb;
+      "CMDB data update" -> { "ENT-6788", "ENT-8847" }
+        usebundle => cfe_internal_update_cmdb,
+        action => u_immediate;
 
   reports:
 
@@ -247,7 +248,7 @@ bundle agent cfe_internal_update_policy_cpv
       comment => "Copy policy updates from master source on policy server if a new validation was acquired",
       handle => "cfe_internal_update_policy_files_inputs_dir",
       copy_from => u_rcp("$(master_location)", @(update_def.policy_servers)),
-      depth_search => u_recurse("inf"),
+      depth_search => u_infinite_client_policy,
       file_select  => u_input_files,
       action => u_immediate,
       classes => u_results("bundle", "update_inputs"),
@@ -280,12 +281,22 @@ bundle agent cfe_internal_update_policy_cpv
 
     am_policy_hub::
 
-      "$(master_location)/."
-      comment => "Make sure masterfiles folder has right file permissions",
-      handle => "cfe_internal_update_policy_files_sys_workdir_masterfiles",
-      perms => u_m($(update_def.masterfiles_perms_mode)),
-      depth_search => u_recurse_basedir("inf"),
-      action => u_immediate;
+      "$(master_location)/." -> { "CFE-951" }
+        comment => "Make sure masterfiles folder has right file permissions",
+        handle => "cfe_internal_update_policy_files_sys_workdir_masterfiles_dirs",
+        perms => u_m($(update_def.masterfiles_perms_mode_dirs)),
+        file_select => u_dirs,
+        depth_search => u_recurse_basedir("inf"),
+        action => u_immediate;
+
+      "$(master_location)/." -> { "CFE-951" }
+        comment => "Make sure masterfiles folder has right file permissions",
+        handle => "cfe_internal_update_policy_files_sys_workdir_masterfiles_not_dir",
+        perms => u_m($(update_def.masterfiles_perms_mode_not_dir)),
+        file_select => u_not_dir,
+        depth_search => u_recurse_basedir("inf"),
+        action => u_immediate;
+
 
   methods:
     debian|redhat|amazon_linux|suse|sles|opensuse::
@@ -301,9 +312,12 @@ bundle agent cfe_internal_update_policy_cpv
 bundle agent cfe_internal_update_cmdb
 # @brief Ensure local cache of CMDB data is up to date
 {
+  classes:
+      "have_cf_reactor" expression => fileexists("$(sys.bindir)/cf-reactor");
+
   methods:
 
-    policy_server.enterprise_edition::
+    policy_server.enterprise_edition.(!have_cf_reactor|cmdb_data_files_updates_done_in_policy)::
       "cfe_internal_update_cmdb_data_distribution";
 
 @if feature(host_specific_data_load)
@@ -312,13 +326,19 @@ bundle agent cfe_internal_update_cmdb
       # Don't pull CMDB data on policy_hub self bootstrap because
       # there will be no cf-serverd listening to serve files yet.
     enterprise_edition.!(bootstrap_mode)::  # ENT-6840
-      "cfe_internal_update_cmdb_data_consumption";
+      "cfe_internal_update_cmdb_data_consumption" -> { "ENT-8847" }
+        action => u_immediate;
 @endif
 }
 
 bundle agent cfe_internal_update_cmdb_data_distribution
 # @brief Ensure data is ready for agents to download
 {
+  classes:
+
+      "_have_cmdb_next_request_state_file" -> { "ENT-9933" }
+        expression => fileexists( "$(_cmdb_next_request_state_file)" );
+
   vars:
     !bootstrap_mode.(policy_server.enterprise_edition)::
 
@@ -327,6 +347,7 @@ bundle agent cfe_internal_update_cmdb_data_distribution
       "_cmdb_next_request_state_file"
         string => "$(sys.statedir)/cmdb_next_request_from.dat";
 
+    !bootstrap_mode.(policy_server.enterprise_edition._have_cmdb_next_request_state_file)::
       # If we have the timestamp from a previous response we use it, else we start from 0
       "_cmdb_previous_next_request_from"
         string => readfile( $(_cmdb_next_request_state_file), inf ),
@@ -336,6 +357,7 @@ bundle agent cfe_internal_update_cmdb_data_distribution
         string => "0",
         unless => regline( "^\d+$", $(_cmdb_next_request_state_file) );
 
+    !bootstrap_mode.(policy_server.enterprise_edition)::
       # We need a script to call that should return the API response
       "_get_cmdb_data_bin" string => "$(sys.workdir)/httpd/htdocs/scripts/get_cmdb.php";
       "_get_cmdb_data_cmd" string => "/var/cfengine/httpd/php/bin/php $(_get_cmdb_data_bin) $(_cmdb_previous_next_request_from)";
@@ -411,11 +433,12 @@ bundle agent cfe_internal_update_cmdb_data_consumption
         create => "true",
         comment => "If a host is to load data from the CMDB, it needs to have a directory where said data is cached.";
 
-      "$(sys.workdir)/data/." -> { "ENT-6788" }
+      "$(sys.workdir)/data/." -> { "ENT-6788", "ENT-8847" }
         depth_search => u_recurse( inf ),
         file_select => u_all,
         copy_from => u_cmdb_data,
-        comment => "So that hosts have access to the most recent CMDB data, we make sure that it's up to date.";
+        comment => "So that hosts have access to the most recent CMDB data, we make sure that it's up to date.",
+        action => u_immediate;
 
 }
 #########################################################
@@ -442,6 +465,14 @@ body perms u_m(p)
 # @param p Desired file mode
 {
       mode  => "$(p)";
+
+#+begin_ENT-951
+# Remove after 3.20 is not supported
+        rxdirs => "true";
+@if minimum_version(3.20)
+        rxdirs => "false";
+@endif
+#+end
 }
 
 #########################################################
@@ -452,6 +483,15 @@ body perms u_mo(p,o)
 # @param p Desired file owner (username or uid)
 {
       mode   => "$(p)";
+
+#+begin_ENT-951
+# Remove after 3.20 is not supported
+        rxdirs => "true";
+@if minimum_version(3.20)
+        rxdirs => "false";
+@endif
+#+end
+
       !(windows|termux)::
         owners => {"$(o)"};
 }
@@ -461,6 +501,14 @@ body perms u_mo(p,o)
 body perms u_shared_lib_perms
 # @brief Shared library permissions
 {
+#+begin_ENT-951
+# Remove after 3.20 is not supported
+        rxdirs => "true";
+@if minimum_version(3.20)
+        rxdirs => "false";
+@endif
+#+end
+
     !hpux::
       mode => "0644";
     hpux::
@@ -570,6 +618,16 @@ body depth_search u_recurse(d)
       exclude_dirs => { "\.svn", "\.git", "git-core" };
 }
 
+#########################################################
+
+body depth_search u_infinite_client_policy
+# @brief Search recursively for files excluding vcs related files and .no-distrib directories
+# @param d Maximum depth to search recursively
+# Duplicated in embedded bootstrap/failsafe
+{
+        depth => "inf";
+        exclude_dirs => { "\.svn", "\.git", "git-core", "\.no-distrib" };
+}
 #########################################################
 
 body depth_search u_recurse_basedir(d)
@@ -807,3 +865,17 @@ body file_select not_vendored_modules(pathname)
   file_result => "path_name";
 }
 #########################################################
+body file_select u_dirs
+# @brief Select directories
+{
+        file_types  => { "dir" };
+        file_result => "file_types";
+}
+body file_select u_not_dir
+# @brief Select all files that are not directories
+{
+        file_types => { "dir" };
+        file_result => "!file_types";
+}
+
+
