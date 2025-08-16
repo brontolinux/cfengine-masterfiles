@@ -26,7 +26,7 @@
 
 # Licensed under:
 # MIT Public License
-# Copyright 2021 Northern.tech AS
+# Copyright 2024 Northern.tech AS
 
 import sys
 import os
@@ -178,9 +178,9 @@ def list_updates(online):
 #        special chars
 # v\s+\|[^\|]+\            |\s+(?P<name>\S+)\s+\|\s+\S+\s+\                          |\s+(?P<version>\S+)\s+\                         |\s+(?P<arch>\S+)\s*$
 
-# The first char will always be "v" which means there is a new version avaialble on search outputs.
+# The first char will always be "v" which means there is a new version available on search outputs.
 
-        match = re.match("v\s+\|[^\|]+\|\s+(?P<name>\S+)\s+\|\s+\S+\s+\|\s+(?P<version>\S+)\s+\|\s+(?P<arch>\S+)\s*$", line)
+        match = re.match(r"v\s+\|[^\|]+\|\s+(?P<name>\S+)\s+\|\s+\S+\s+\|\s+(?P<version>\S+)\s+\|\s+(?P<arch>\S+)\s*$", line)
         if match is not None:
             sys.stdout.write("Name=" + match.group("name") + "\n")
             sys.stdout.write("Version=" + match.group("version") + "\n")

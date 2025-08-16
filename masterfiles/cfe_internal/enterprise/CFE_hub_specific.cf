@@ -30,6 +30,12 @@ body file control
 bundle common cfe_internal_hub_vars
 # @brief Set hub specific variables
 {
+  classes:
+
+      "cfe_enterprise_have_SSLCACertificateFile_defined" -> { "ENT-11421" }
+        scope => "namespace",
+        expression => isvariable( "SSLCACertificateFile" );
+
   vars:
 
     policy_server::
@@ -593,7 +599,9 @@ bundle agent cfe_internal_exported_report_location
 
 bundle agent cfe_internal_refresh_inventory_view
 # @brief Refresh list of inventory variables every 5 minutes
+# @note Beginning with 3.24.0 the inventory view refresh is handled by cf-reactor.
 {
+@if before_version(3.24.0)
   meta:
 
     (policy_server|am_policy_hub).enterprise_edition::
@@ -607,12 +615,11 @@ bundle agent cfe_internal_refresh_inventory_view
       "$(sys.workdir)/httpd/php/bin/php"
         args => "$(cfe_internal_hub_vars.public_docroot)/index.php cli_tasks inventory_refresh",
         contain => silent,
-@if minimum_version(3.15.0)
         inform => "false",
-@endif
         comment => "This refreshes the variables shown in the Mission Portal Inventory.",
         handle  => "mpf_fresh_inventory_view",
         if => isdir( "$(cfe_internal_hub_vars.docroot)/api/modules/inventory" );
+@endif
 }
 
 bundle agent cfe_internal_refresh_hosts_view
@@ -642,6 +649,13 @@ bundle agent cfe_internal_refresh_hosts_view
 
 bundle agent cfe_internal_clear_last_seen_hosts_logs
 # @brief Clear last seen hosts log every 5 minutes
+# TODO Redact this bundle when 3.15 is no longer under standard support
+# (December 31st 2022). The commands in the policy are scoped to run only on
+# active enterprise hubs with =(cfengine_3_12|cfengine_3_13|cfengine_3_14)=.
+# 3.15.0 was released while 3.12.x was still supported and this bundle should
+# remain until 3.15.0 becomes EOL so that someone running 3.12.x could upgrade
+# to 3.15.x policy while still running 3.12.x binaries and this bundle will
+# continue to function as expected.
 {
   meta:
 
@@ -737,7 +751,8 @@ bundle agent cfe_internal_enterprise_policy_analyzer
     enterprise_edition.policy_server::
 
       "analyzer_flagfile" string => "$(cfe_internal_hub_vars.docroot)/analyzer/pa.enabled";
-      "analyzer_dir" string => "/opt/cfengine/analyzer/policy/masterfiles";
+      "analyzer_base" string => "/opt/cfengine/analyzer";
+      "analyzer_dir" string => "$(analyzer_base)/policy/masterfiles";
       "analyzer_source" string => "$(sys.masterdir)";
 
       "exclude_files" -> { "ENT-7684" }
@@ -782,7 +797,7 @@ bundle agent cfe_internal_enterprise_policy_analyzer
          depth_search => recurse_with_base( inf ),
          file_select => default:ex_list( @(exclude_files) );
 
-      "$(analyzer_dir)/." -> { "CFE-951" }
+      "$(analyzer_base)/." -> { "CFE-951" }
         file_select => default:dirs,
         depth_search => recurse_with_base( inf ),
         perms => mog( "0450", "root", $(def.cf_apache_group) );

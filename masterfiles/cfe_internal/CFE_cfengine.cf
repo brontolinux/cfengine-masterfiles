@@ -59,7 +59,7 @@ bundle agent cfe_internal_management
       "bundles" slist => getindices(policy);
 
       "recommendation_bundles"
-        slist => sort( bundlesmatching( "cfengine_recommendations" ), lex);
+        slist => sort( bundlesmatching( ".*", "cfengine_recommends" ), lex);
 
   methods:
 
@@ -77,4 +77,7 @@ bundle agent cfe_internal_management
   reports:
     DEBUG|DEBUG_cfe_internal_management::
       "DEBUG $(this.bundle): Should actuate $(bundles)";
+
+    cfengine_recommendation_instruct_disablement::
+      "Note: All recommendations can be disabled by defining 'default:cfengine_recommendations_disabled'";
 }

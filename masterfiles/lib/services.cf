@@ -111,10 +111,12 @@ bundle agent standard_services(service,state)
 #
 # Else, if chkconfig is present, it will be used.
 #
-# Else, if the service command is available, if will be used.
+# Else, if the service command is available, it will be used.
 #
-# Else, if the svcadm command is available, if will be used. Note you
+# Else, if the svcadm command is available, it will be used. Note you
 # have to supply the full SMF service identifier.
+#
+# Else, if lssrc command is available (AIX), it will be used.
 #
 # Else, control is passed to `classic_services`.
 #
@@ -139,6 +141,9 @@ bundle agent standard_services(service,state)
 # methods:
 #     "SSHD should be running" usebundle => standard_services("sshd", "start");
 # ```
+#
+# **Notes:**
+# FreeBSD uses "one" prefixed commands, e.g. onestatus, onestart, onestop so that services that are not enabled can still be managed
 {
   vars:
       "c_service" string => canonify("$(service)");
@@ -167,19 +172,23 @@ bundle agent standard_services(service,state)
       "chkconfig" expression => "!systemd._stdlib_path_exists_chkconfig";
       "sysvservice" expression => "!systemd.!chkconfig._stdlib_path_exists_service";
       "smf" expression => "!systemd.!chkconfig.!sysvservice._stdlib_path_exists_svcadm";
-      "fallback" expression => "!systemd.!chkconfig.!sysvservice.!smf";
+      # AIX System Resource Controller https://www.ibm.com/docs/en/aix/7.2?topic=concepts-system-resource-controller
+      "aix_src" expression => "_stdlib_path_exists_lssrc";
+      "fallback" expression => "!systemd.!chkconfig.!sysvservice.!smf.!aix_src";
 
       "have_init" expression => fileexists($(init));
 
-    chkconfig.have_init.freebsd::
-      "running" -> { "CFE-3513" }
-        expression => returnszero("$(init) onestatus > /dev/null", "useshell");
-
-    chkconfig.have_init.!freebsd::
+    chkconfig.have_init::
       "running" expression => returnszero("$(init) status > /dev/null", "useshell");
 
     sysvservice.have_init::
-      "running" expression => returnszero("$(paths.service) $(service) status > /dev/null", "useshell");
+      # We use one prefixed service commands on freebsd so that service
+      # management works even when the service is not enabled in /etc/rc.conf.
+
+      "running" -> { "CFE-4323" }
+        with => ifelse( "freebsd", "one", ""),
+        expression => returnszero("$(paths.service) $(service) $(with)status > /dev/null",
+                                  "useshell");
 
     chkconfig.SuSE::
       "onboot"
@@ -219,47 +228,52 @@ bundle agent standard_services(service,state)
       contain => silent;
 
     sysvservice.start.!running::
-      "$(paths.service) $(service) start"
-      handle => "standard_services_sysvservice_not_running_start",
-      classes => kept_successful_command,
-      comment => "If the service should be running and it is not
-                  currently running then we should issue the standard service
-                  command to start the service.";
+      # We use one prefixed service commands on freebsd so that service
+      # management works even when the service is not enabled in /etc/rc.conf.
+
+      "$(paths.service) $(service) $(with)start" -> { "CFE-4323" }
+        handle => "standard_services_sysvservice_not_running_start",
+        classes => kept_successful_command,
+        with => ifelse( "freebsd", "one", "");
 
     sysvservice.restart::
-      "$(paths.service) $(service) restart"
-      handle => "standard_services_sysvservice_restart",
-      classes => kept_successful_command,
-      comment => "If the service should be restarted we issue the
-                  standard service command to restart or reload the service.
-                  There is no restriction based on the services current state as
-                  restart can start a service that was not already
-                  running.";
+      # We use one prefixed service commands on freebsd so that service
+      # management works even when the service is not enabled in /etc/rc.conf.
+
+      "$(paths.service) $(service) $(with)restart" -> { "CFE-4323" }
+        handle => "standard_services_sysvservice_restart",
+        classes => kept_successful_command,
+        with => ifelse( "freebsd", "one", "");
 
     sysvservice.reload.running::
-      "$(paths.service) $(service) reload"
-      handle => "standard_services_sysvservice_reload",
-      classes => kept_successful_command,
-      comment => "If the service should be reloaded we issue the
-                  standard service command to reload the service.
-                  It is restricted to when the service is running as a reload
-                  should not start services that are not already running. This
-                  may not be triggered as service state parameters are limited
-                  and translated to the closest meaning.";
+      # If the service should be reloaded we issue the standard service command
+      # to reload the service, but only if it's currently running as to not
+      # start a service that was not already running. This may not be triggered
+      # as service state parameters are limited and translated to the closest
+      # meaning.
+
+      "$(paths.service) $(service) $(with)reload" -> { "CFE-4323" }
+        handle => "standard_services_sysvservice_reload",
+        classes => kept_successful_command,
+        with => ifelse( "freebsd", "one", "");
+
 
     sysvservice.((stop|disable).running)::
-      "$(paths.service) $(service) stop"
-      handle => "standard_services_sysvservice_stop",
-      classes => kept_successful_command,
-      comment => "If the service should be stopped or disabled and it is
-                  currently running then we should issue the standard service
-                  command to stop the service.";
+      # If the service should be stopped or disabled and it is currently running
+      # then we should issue the standard service command to stop the service
+
+      "$(paths.service) $(service) $(with)stop" -> { "CFE-4323" }
+        handle => "standard_services_sysvservice_not_freebsd stop",
+        classes => kept_successful_command,
+        with => ifelse( "freebsd", "one", "");
 
     smf::
       "$(paths.svcadm) $(svcadm_mode) $(service)"
       classes => kept_successful_command;
 
   methods:
+    aix_src::
+      "aix_service" usebundle => aix_services($(service), $(state));
     fallback::
       "classic" usebundle => classic_services($(service), $(state));
 
@@ -326,7 +340,7 @@ bundle agent systemd_services(service,state)
 # * restart - Service should be restarted, no promise about state on boot made.
 # * reload - Service should be reloaded, no promise about state on boot made.
 # * enabled - Service should be enabled, no promise about state on boot made.
-# * disabled - Service should be reloaded, no promise about state on boot made.
+# * disabled - Service should be disabled, no promise about state on boot made.
 # * start - Service should be running, service should be started on boot (active + enabled).
 # * stop - Service should not be running, service should not be started on boot (inactive + disabled).
 #
@@ -1089,4 +1103,75 @@ bundle agent classic_services(service,state)
 
       "DEBUG $(this.bundle): The baseinit is NOT provided, using default"
       if => not(isvariable("baseinit[$(service)]"));
+}
+
+body service_method aix_service_method
+{
+  service_bundle => aix_services("$(this.promiser)","$(this.service_policy)");
+}
+
+# example of querying state of a service on AIX
+#
+# bash-5.1# /usr/bin/lssrc -s sendmail
+# Subsystem         Group            PID          Status
+#  sendmail         mail             5308762      active
+#
+# according to https://docs.cfengine.com/docs/3.24/reference-promise-types-services.html#service_policy
+# state can be one of start, stop, enable, disable, restart and reload.
+# disable/enable might be available for services in /etc/inetd.conf
+# e.g. https://www.ibm.com/support/pages/ibm-aix-how-disable-rsh-and-rlogin-services
+# /usr/bin/lssrc -t login, comment out lines in /etc/inetd.conf
+#
+# Note: This service method bundle does NOT handle inetd services like rsh/rlogin
+# only subsystems aka those services listed with /usr/bin/lssrc -a
+# https://www.ibm.com/docs/en/aix/7.3?topic=daemons-subsystems-subservers
+#
+# Also note this from the lssrc man page:
+#        The lssrc command output can sometimes show two entries for a particular daemon. One instance will be active and another instance will be
+#       inoperative. This can happen if the subsystem is modified (using the mkssys command or chssys command) without stopping the subsystem. The
+#       original subsystem will remain active and the modified instance will be inoperative until the subsystem is stopped and started again.
+#
+# Additional output may appear prefixed with Q: for example if it takes some time to change the service state:
+#
+#   notice: Q: "...in/stopsrc -s s": 0513-056 Timeout waiting for command response. If you specified a foreign host,
+# Q: "...in/stopsrc -s s": see the /etc/inittab file on the foreign host to verify that the SRC daemon
+# Q: "...in/stopsrc -s s": (srcmstr) was started with the -r flag to accept remote requests.
+# Q: "...in/stopsrc -s s": 0513-059 The sendmail Subsystem has been started. Subsystem PID is 13042068.
+#
+# Another failure case. Likely on next agent run (default of 5 minutes) the service will have stopped or we will try again.
+#    error: Finished command related to promiser '/usr/bin/stopsrc -s sendmail' -- an error occurred, returned 1
+#   notice: Q: "...in/stopsrc -s s": 0513-056 Timeout waiting for command response. If you specified a foreign host,
+# Q: "...in/stopsrc -s s": see the /etc/inittab file on the foreign host to verify that the SRC daemon
+# Q: "...in/stopsrc -s s": (srcmstr) was started with the -r flag to accept remote requests.
+bundle agent aix_services(service, desired_state)
+{
+  vars:
+    # current state can be: active, inoperative, stopping
+    "current_state" string => execresult("$(paths.lssrc) -s $(service) | tail -1 | awk '{print $NF}'", useshell);
+
+  classes:
+    "needs_start" expression => and(
+      strcmp("$(current_state)", "inoperative"),
+      strcmp("$(desired_state)", "start")
+    );
+    "needs_restart" expression => and(
+      strcmp("$(desired_state)", "restart")
+    );
+    "needs_stop" expression => and(
+      strcmp("$(current_state)", "active"),
+      strcmp("$(desired_state)", "stop")
+    );
+
+  commands:
+    needs_start::
+      "$(paths.startsrc) -s $(service)";
+    needs_restart::
+      "$(paths.stopsrc) -s $(service); $(paths.startsrc) -s $(service)"
+      contain => in_shell;
+    needs_stop::
+      "$(paths.stopsrc) -s $(service)";
+
+  reports:
+    DEBUG::
+      "Current state of service $(service) is $(current_state). Desired state is $(desired_state).";
 }

@@ -42,9 +42,9 @@ bundle agent config
       "path" string => "$(federation_dir)/cfapache/federation-config.json";
       "path_setup_status" string => "$(federation_dir)/cfapache/setup-status.json";
 
-      # TODO: Instrument augments
-      "dump_interval" -> {"ENT-4806"}
+      "dump_interval" -> { "ENT-4806", "ENT-10900" }
         int => "20",
+        if => not( isvariable( "cfengine_enterprise_federation:config.dump_interval" ) ),
         comment => "Dump data on the feeders every 20 minutes";
 
       # TODO: don't hard-code cftransport user
@@ -71,7 +71,7 @@ bundle agent config
       # _stdlib_path_exists_getenforce and paths.getenforce are defined by masterfiles/lib/paths.cf
       default:_stdlib_path_exists_getenforce::
         "selinux_enabled"
-          expression => strcmp("Enforcing", execresult("$(paths.getenforce)", useshell)),
+          expression => strcmp("Enforcing", execresult("$(default:paths.getenforce)", useshell)),
           scope => "namespace";
 
 
@@ -181,12 +181,16 @@ bundle agent config
 bundle agent distributed_cleanup_dependencies
 # @brief warn if python3 and urllib3 required dependencies are not installed
 # if cfengine_mp_fr_enable_distributed_cleanup class is defined
+# Note: these requirements are only needed on superhub to run the distributed cleanup python script.
+#       on feeders only the shell script is run so no python dependencies needed there.
 {
   vars:
-    debian|ubuntu|redhat_8|centos_8::
+    debian|ubuntu|redhat_9|rocky_9::
       "packages" slist => { "python3", "python3-urllib3" };
+    redhat_8|centos_8::
+        "packages" slist => { "python36", "python3-urllib3" };
 
-    centos_7::
+    redhat_7|centos_7::
       "packages" slist => { "python3" };
 
   classes:
@@ -216,7 +220,6 @@ bundle agent distributed_cleanup_dependencies
       "$(packages)"
         policy => "present",
         classes => default:results("bundle", "cfengine_mp_fr_distributed_cleanup_packages"),
-        action => default:policy ( "warn" ),
         package_module => default:yum;
 
   reports:
@@ -242,7 +245,7 @@ bundle agent semanage_installed
                   warn or fix based.";
     debian_6|debian_7|debian_8|ubuntu_12|ubuntu_14|ubuntu_16|rhel_5::
       "semanage_package" string => "policycoreutils";
-    debian_9|debian_10|ubuntu_18|redhat_8|centos_8::
+    debian_9|debian_10|ubuntu_18|redhat_8|centos_8|redhat_9|rocky_9::
       "semanage_package" string => "policycoreutils-python-utils";
     redhat_6|centos_6|redhat_7|centos_7::
       "semanage_package" string => "policycoreutils-python";
@@ -261,9 +264,69 @@ bundle agent semanage_installed
 
   reports:
     default:DEBUG|DEBUG_semanage_installed::
-      "paths.semanage = $(paths.semanage)";
+      "paths.semanage = $(default:paths.semanage)";
     !default:_stdlib_path_exists_semanage.!default:cfengine_mp_fr_dependencies_auto_install::
-      "semanage command is not available at $(paths.semanage). Will only install needed package if cfengine_mp_fr_dependencies_auto_install class is defined in augments(def.json) or with --define cf-agent option.";
+      "semanage command is not available at $(default:paths.semanage). Will only install needed package if cfengine_mp_fr_dependencies_auto_install class is defined in augments(def.json) or with --define cf-agent option.";
+}
+
+bundle agent ssh_keygen(key_path)
+{
+  commands:
+      "/usr/bin/ssh-keygen"
+        handle => "ssh_keys_configured",
+        args => "-N '' -f $(key_path)",
+        if => not( fileexists( "$(key_path)" ));
+}
+
+bundle agent ssh_selinux_context(home, ssh_paths)
+{
+  classes:
+    default:_stdlib_path_exists_semanage::
+      "cftransport_fcontext_missing"
+        expression => not(returnszero("$(default:paths.semanage) fcontext -l | grep '$(home)/.ssh(/.*)?'", "useshell")),
+        if => fileexists("$(home)");
+
+    any::
+      # For all the files below it must be true that if they exist they need
+      # to have the right context.
+      # IOW, the following implication: if fileexists() then correct_context.
+      # IOW, the following OR: not(filexists()) or correct_context.
+      # not( and()) means that if for one of the files the implication is false, we get a true.
+      "incorrect_ssh_context"
+        expression => not( and(
+                                or(
+                                    not(fileexists("$(home)")),
+                                    regcmp(".*[\s:]ssh_home_t[\s:].*",
+                                           execresult("$(default:paths.ls) -dZ $(home)/.ssh", noshell))),
+                                or(
+                                    not(fileexists("$(ssh_paths[auth_keys])")),
+                                    regcmp(".*[\s:]ssh_home_t[\s:].*",
+                                           execresult("$(default:paths.ls) -Z $(ssh_paths[auth_keys])", noshell))),
+                                or(
+                                    not(fileexists("$(ssh_paths[priv_key])")),
+                                    regcmp(".*[\s:]ssh_home_t[\s:].*",
+                                           execresult("$(default:paths.ls) -Z $(ssh_paths[priv_key])", noshell))),
+                                or(
+                                    not(fileexists("$(ssh_paths[pub_key])")),
+                                    regcmp(".*[\s:]ssh_home_t[\s:].*",
+                                           execresult("$(default:paths.ls) -Z $(ssh_paths[pub_key])", noshell))),
+                                or(
+                                    not(fileexists("$(ssh_paths[config])")),
+                                    regcmp(".*[\s:]ssh_home_t[\s:].*",
+                                           execresult("$(default:paths.ls) -Z $(ssh_paths[config])", noshell)))
+        ));
+  commands:
+    # _stdlib_path_exists_<command> and paths.<command> are defined is masterfiles/lib/paths.cf
+    cftransport_fcontext_missing.default:_stdlib_path_exists_semanage::
+      "$(default:paths.semanage) fcontext -a -t ssh_home_t '$(home)/.ssh(/.*)?'";
+    incorrect_ssh_context.default:_stdlib_path_exists_restorecon::
+      "$(default:paths.restorecon) -R -F $(home)/.ssh/";
+
+  reports:
+    incorrect_ssh_context.!default:_stdlib_path_exists_semanage::
+      "need to fix incorrect ssh context for transport user but semanage path in $(sys.libdir)/paths.cf $(default:paths.semanage) does not resolve";
+    incorrect_ssh_context.!default:_stdlib_path_exists_restorecon)::
+      "need to fix incorrect ssh context for transport user but restorecon path in $(sys.libdir)/paths.cf $(default:paths.restorecon) does not resolve";
 }
 
 bundle agent transport_user
@@ -291,25 +354,15 @@ bundle agent transport_user
           "$(ssh_config)"
         };
 
-  classes:
-    enabled.selinux_enabled::
-        "incorrect_ssh_context"
-          expression => not( or(
-                               regcmp(".*[\s:]ssh_home_t[\s:].*",
-                                      execresult("ls -Z $(home) | grep .ssh",
-                                                 useshell)),
-                               regcmp(".*[\s:]ssh_home_t[\s:].*",
-                                      execresult("ls -Z $(ssh_auth_keys)",
-                                                 useshell)),
-                               regcmp(".*[\s:]ssh_home_t[\s:].*",
-                                      execresult("ls -Z $(ssh_priv_key)",
-                                                 useshell)),
-                               regcmp(".*[\s:]ssh_home_t[\s:].*",
-                                      execresult("ls -Z $(ssh_pub_key)",
-                                                 useshell)),
-                               regcmp(".*[\s:]ssh_home_t[\s:].*",
-                                      execresult("ls -Z $(ssh_config)",
-                                                 useshell))));
+      "ssh_paths" data => parsejson('{
+        "key_name": "id_FR",
+        "priv_key": "$(home)/.ssh/$(ssh_key_name)",
+        "pub_key": "$(ssh_priv_key).pub",
+        "auth_keys": "$(home)/.ssh/authorized_keys",
+        "known_hosts": "$(home)/.ssh/known_hosts",
+        "config": "$(home)/.ssh/config"
+      }');
+
   users:
     "$(user)"
       policy => "present",
@@ -351,26 +404,12 @@ bundle agent transport_user
   methods:
     selinux_enabled::
       "semanage_installed" usebundle => semanage_installed;
-
-  commands:
-    # _stdlib_path_exists_<command> and paths.<command> are defined is masterfiles/lib/paths.cf
-    selinux_enabled.incorrect_ssh_context.default:_stdlib_path_exists_semanage.default:_stdlib_path_exists_restorecon::
-      "$(paths.semanage) fcontext -a -t ssh_home_t '$(home)/.ssh(/.*)?'";
-      "$(paths.restorecon) -R -F $(home)/.ssh/";
-
-    any::
+    enabled.selinux_enabled::
+      # Ensure correct SElinux context
+      "ssh_selinux_context" usebundle => ssh_selinux_context("$(home)", @(ssh_paths));
+    enabled::
       # Generate ssh keypair
-      "/usr/bin/ssh-keygen"
-        handle => "ssh_keys_configured",
-        args => "-N '' -f $(ssh_priv_key)",
-        if => and( isdir( "$(home)/.ssh" ),
-                   not( fileexists( "$(ssh_priv_key)" )));
-
-  reports:
-    selinux_enabled.incorrect_ssh_context.!default:_stdlib_path_exists_semanage::
-      "need to fix incorrect ssh context for transport user but semanage path in $(sys.libdir)/paths.cf $(paths.semanage) does not resolve";
-    selinux_enabled.incorrect_ssh_context.!default:_stdlib_path_exists_restorecon)::
-      "need to fix incorrect ssh context for transport user but restorecon path in $(sys.libdir)/paths.cf $(paths.restorecon) does not resolve";
+      "ssh_keygen" usebundle => ssh_keygen("$(ssh_priv_key)");
 }
 
 bundle agent clean_when_off
@@ -406,7 +445,9 @@ bundle agent clean_when_off
 
   classes:
     selinux_enabled.default:_stdlib_path_exists_semanage::
-      "has_cftransport_fcontext" expression => returnszero("$(paths.semanage) fcontext -l | grep $(home)", "useshell");
+      "has_cftransport_fcontext" expression => returnszero("$(default:paths.semanage) fcontext -l | grep $(home)", "useshell");
+    "remote_hubs_table_empty" expression => returnszero(`[ $(const.dollar)($(sys.bindir)/psql cfsettings --quiet --tuples-only --command "SELECT COUNT(*) FROM remote_hubs") -eq "0"]`, "useshell");
+    "federated_reporting_settings_table_empty" expression => returnszero(`[ $(const.dollar)($(sys.bindir)/psql cfsettings --quiet --tuples-only --command "SELECT COUNT(*) FROM federated_reporting_settings") -eq "0"]`, "useshell");
 
 
   commands:
@@ -419,7 +460,7 @@ bundle agent clean_when_off
 
       # _stdlib_path_exists_<command> and paths.<command> are defined in masterfiles/lib/paths.cf
     selinux_enabled.default:_stdlib_path_exists_semanage.has_cftransport_fcontext::
-      "$(paths.semanage) fcontext -d '$(home)/.ssh(/.*)?'";
+      "$(default:paths.semanage) fcontext -d '$(home)/.ssh(/.*)?'";
 
 }
 
@@ -456,6 +497,8 @@ bundle agent federation_manage_files
     "workdir" data => parsejson('{"workdir":"$(sys.workdir)"}');
     "handle_duplicates_value" string => ifelse("default:cfengine_mp_fr_handle_duplicate_hostkeys", "yes", "no");
     "handle_duplicates" data => parsejson('{"handle_duplicates":"$(handle_duplicates_value)"}');
+    "debug_import_value" string => ifelse("default:cfengine_mp_fr_debug_import", "yes", "no");
+    "debug_import" data => parsejson('{"debug_import":"$(debug_import_value)"}');
 
   files:
     enterprise_edition.(policy_server|am_policy_hub)::
@@ -519,6 +562,7 @@ bundle agent federation_manage_files
                                    @(feeder_username),
                                    @(feeder),
                                    parsejson('{"superhub_hostkeys": "$(superhub_hostkeys)"}'),
+                                   @(debug_import),
                                    @(this_hostkey),
                                    @(cf_version),
                                    @(handle_duplicates),
@@ -546,10 +590,6 @@ bundle agent federation_manage_files
       "$(cfengine_enterprise_federation:config.bin_dir)/dump.sh"
         copy_from => default:local_dcp( "$(this.promise_dirname)/../../../templates/federated_reporting/dump.sh" ),
         perms => default:mog( "700", "root", "root" );
-
-      "$(cfengine_enterprise_federation:config.federation_dir)/fedhub/dump/filters/50-merge_inserts.awk"
-        copy_from => default:local_dcp( "$(this.promise_dirname)/../../../templates/federated_reporting/50-merge_inserts.awk" ),
-        perms => default:mog( "600", "root", "root" );
 
     am_transporter::
       "$(cfengine_enterprise_federation:config.bin_dir)/transport.sh" -> { "CFE-951" }
@@ -662,20 +702,28 @@ body contain cfpostgres_user
 
 bundle agent exported_data
 # @brief Run script to dump pg data on feeder hub
+# @note Since version 3.24.0, the inventory view is automatically refreshed by
+# cf-reactor whenever inventory is updated. Hence, you can assume that the
+# inventory is refreshed. However, there is one exception; if the previous
+# refresh happened too recently, the following one will be delayed.
 {
+@if before_version(3.24.0)
   methods:
     am_feeder.!am_paused::
       "Refresh Inventory"
         usebundle => "default:cfe_internal_refresh_inventory_view",
         handle => "fr_inventory_refresh",
         comment => "Use standard inventory refresh so that we don't run it twice";
+@endif
 
   commands:
     am_feeder.!am_paused::
       "/bin/bash"
         arglist => {"$(cfengine_enterprise_federation:config.bin_dir)/dump.sh"},
         contain => default:in_shell,
+@if before_version(3.24.0)
         depends_on => { "fr_inventory_refresh" },
+@endif
         comment => "Refresh Inventory must be completed before dumping data";
 }
 
@@ -738,7 +786,11 @@ bundle agent superhub_schema
       "$(cfengine_enterprise_federation:config.bin_dir)/psql_wrapper.sh"
         arglist => {
                      "cfdb",
+@if minimum_version(3.24)
+                     "select superhub_schema('$(sys.key_digest)');",
+@else
                      `"select superhub_schema('$(sys.key_digest)');"`,
+@endif
                    },
         classes => psql_wrapper_exit_codes;
 }
@@ -756,7 +808,11 @@ bundle agent ensure_feeders
       "$(cfengine_enterprise_federation:config.bin_dir)/psql_wrapper.sh"
         arglist => {
                      "cfdb",
+@if minimum_version(3.24)
+                     "select ensure_feeders($(feeders_arg));"
+@else
                      `"select ensure_feeders($(feeders_arg));"`
+@endif
                    },
         classes => psql_wrapper_exit_codes,
         if => isgreaterthan(length(feeders), 0);
@@ -792,7 +848,8 @@ bundle agent entry
     am_policy_hub.(am_off|config_not_exists)::
       "CFEngine Enterprise Federation Transport Off"
         handle => "clean_when_off",
-        usebundle => clean_when_off;
+        usebundle => clean_when_off,
+        if => cf_version_minimum("3.15");
     enabled.am_on::
       "CFEngine Enterprise Federation Transport User"
         handle => "transport_user",
@@ -832,15 +889,16 @@ bundle agent entry
     am_policy_hub.default:cfengine_mp_fr_enable_distributed_cleanup::
       "Distributed Cleanup Dependencies"
         handle => "distributed_cleanup_dependencies",
+        if => "enabled.am_on.am_superhub.!am_paused",
         usebundle => "distributed_cleanup_dependencies";
       "Distributed Cleanup Setup"
         handle => "distributed_cleanup_setup",
-        depends_on => { "transport_user", "data_transport", "distributed_cleanup_dependencies" },
+        depends_on => { "transport_user", "data_transport" },
         usebundle => "distributed_cleanup_setup";
       "Distributed Federated Host Cleanup"
         handle => "distributed_cleanup",
         if => "enabled.am_on.am_superhub.!am_paused",
-        depends_on => { "imported_data", "distributed_cleanup_setup" },
+        depends_on => { "imported_data", "distributed_cleanup_setup", "distributed_cleanup_dependencies" },
         usebundle => distributed_cleanup_run;
 
   reports:

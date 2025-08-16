@@ -5,7 +5,7 @@
 # MIT Public License
 # http://www.opensource.org/licenses/MIT
 
-# Copyright 2021 Northern.tech AS
+# Copyright 2024 Northern.tech AS
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of
 # this software and associated documentation files (the "Software"), to deal in
@@ -41,7 +41,7 @@ body common control
 {
 
       bundlesequence => {
-                        # Common bundle first (Best Practice)
+                          # Common bundle first (Best Practice)
                           inventory_control,
                           @(inventory.bundles),
                           def,
@@ -54,9 +54,9 @@ body common control
                           services_autorun,
                           @(services_autorun.bundles),
 
-                         # Agent bundle
+                          # Agent bundle
                           cfe_internal_management,   # See cfe_internal/CFE_cfengine.cf
-                          main,
+                          mpf_main,
                           @(cfengine_enterprise_hub_ha.management_bundles),
                           @(def.bundlesequence_end),
 
@@ -66,19 +66,19 @@ body common control
                   # User policy init, for example for defining custom promise types:
                   "services/init.cf",
 
-                 # File definition for global variables and classes
+                  # File definition for global variables and classes
                   @(cfengine_controls.def_inputs),
 
-                # Inventory policy
+                  # Inventory policy
                   @(inventory.inputs),
 
-                 # CFEngine internal policy for the management of CFEngine itself
+                  # CFEngine internal policy for the management of CFEngine itself
                   @(cfe_internal_inputs.inputs),
 
-                 # Control body for all CFEngine robot agents
+                  # Control body for all CFEngine robot agents
                   @(cfengine_controls.inputs),
 
-                 # COPBL/Custom libraries.  Eventually this should use wildcards.
+                  # COPBL/Custom libraries.  Eventually this should use wildcards.
                   @(cfengine_stdlib.inputs),
 
                   # autorun system
@@ -87,27 +87,37 @@ body common control
                   "services/main.cf",
       };
 
-      version => "CFEngine Promises.cf 3.18.5";
+      version => "CFEngine Promises.cf 3.24.2";
 
       # From 3.7 onwards there is a new package promise implementation using package
       # modules in which you MUST provide package modules used to generate
       # software inventory reports. You can also provide global default package module
       # instead of specifying it in all package promises.
-    (debian|redhat|centos|suse|sles|opensuse|amazon_linux).cfe_python_for_package_modules_supported.!disable_inventory_package_refresh::
-          package_inventory => { $(package_module_knowledge.platform_default) };
+    (debian).!disable_inventory_package_refresh::
+          package_inventory => { $(package_module_knowledge.platform_default), @(default:package_module_knowledge.additional_inventory) };
 
-    (debian|redhat|suse|sles|opensuse|amazon_linux)::
+      # We only define package_inventory on redhat like systems that have a
+      # python version that works with the package module.
+    (redhat|centos|suse|sles|opensuse|amazon_linux).cfe_python_for_package_modules_supported.!disable_inventory_package_refresh::
+        package_inventory => { $(package_module_knowledge.platform_default), @(default:package_module_knowledge.additional_inventory)};
+
+    aix.!disable_inventory_package_refresh::
+      package_inventory => { $(package_module_knowledge.platform_default), @(default:package_module_knowledge.additional_inventory) };
+
+    freebsd.!disable_inventory_package_refresh::
+          package_inventory => { $(package_module_knowledge.platform_default), @(default:package_module_knowledge.additional_inventory) };
+
+    aix::
+      package_module => $(package_module_knowledge.platform_default);
+
+
+    (debian|redhat|suse|sles|opensuse|amazon_linux|freebsd)::
           package_module => $(package_module_knowledge.platform_default);
 
-      # CFEngine 3.12.2+ and 3.14+ have new package module on Windows
-    windows.cfengine_3_12.!(cfengine_3_12_0|cfengine_3_12_1)::
-          package_inventory => { $(package_module_knowledge.platform_default) };
-          package_module => $(package_module_knowledge.platform_default);
-@if minimum_version(3.14)
     windows::
-          package_inventory => { $(package_module_knowledge.platform_default) };
+          package_inventory => { $(package_module_knowledge.platform_default), @(default:package_module_knowledge.additional_inventory) };
           package_module => $(package_module_knowledge.platform_default);
-@endif
+
     termux::
           package_module => $(package_module_knowledge.platform_default);
 
@@ -119,6 +129,9 @@ body common control
         ignore_missing_bundles => "$(def.control_common_ignore_missing_bundles)";
         ignore_missing_inputs => "$(def.control_common_ignore_missing_inputs)";
 
+
+      # The number of minutes after which last-seen entries are purged from cf_lastseen.lmdb
+        lastseenexpireafter => "$(def.control_common_lastseenexpireafter)";
 
     control_common_tls_min_version_defined::
         tls_min_version => "$(default:def.control_common_tls_min_version)"; # See also: allowtlsversion in body server control
@@ -342,14 +355,14 @@ bundle common services_autorun
       "_default_autorun_input_dir"
         string => "$(this.promise_dirname)/services/autorun";
       "_default_autorun_inputs"
-        slist => lsdir( "$(_default_autorun_input_dir)", ".*\.cf", "true");
+        slist => sort( lsdir( "$(_default_autorun_input_dir)", ".*\.cf", "true"), lex);
 
       "_extra_autorun_input_dirs"
         slist => { @(def.mpf_extra_autorun_inputs) },
         if => isvariable( "def.mpf_extra_autorun_inputs" );
 
       "_extra_autorun_inputs[$(_extra_autorun_input_dirs)]"
-        slist => lsdir("$(_extra_autorun_input_dirs)/.", ".*\.cf", "true"),
+        slist => sort( lsdir("$(_extra_autorun_input_dirs)/.", ".*\.cf", "true"), lex),
         if => isdir( $(_extra_autorun_input_dirs) );
 
       "found_inputs" slist => { @(_default_autorun_inputs),
