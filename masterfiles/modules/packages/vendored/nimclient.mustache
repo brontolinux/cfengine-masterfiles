@@ -63,7 +63,7 @@ list_updates () {
     # This function should return the list of package updates that are available
     # NAME=
     # VERSION=
-    # ARCHITECUTRE=
+    # ARCHITECTURE=
     # If you can't get a list of updates available, then you can't use
     # version=latest and mission portal won't report updates available. If
     # there is no valid cached list, AND it is unable to get a list it should
@@ -146,7 +146,7 @@ done
 # This is not well developed as I don't have continuous access to aix and nim
 # nor am I an expert
 CFENGINE_TEST_NIMCLIENT_MOCK=false
-if [ -n "$CFENGINE_TEST_NIMCLIENT_MOCK"  = "true" ]; then
+if [ "$CFENGINE_TEST_NIMCLIENT_MOCK" = "true" ]; then
     list_installed_packages() {
         cat ../../tests/unit/mock_lslpp_Lc
      }

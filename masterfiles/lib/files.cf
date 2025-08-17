@@ -212,8 +212,10 @@ bundle edit_line prepend_if_no_line(string)
 # @brief Prepend `string` if it doesn't exist in the file
 # @param string The string to be prepended
 #
-# **See also:** [`insert_lines`][insert_lines] in
-# [`edit_line`][bundle edit_line]
+# **See also:**
+#
+# * [`insert_lines` promise type][insert_lines]
+# * [`edit_line` bundles][edit_line]
 {
   insert_lines:
       "$(string)"
@@ -1001,21 +1003,54 @@ bundle edit_line set_colon_field(key,field,val)
 bundle edit_line set_user_field(user,field,val)
 # @brief Set the value of field number "field" in a `:-field`
 # formatted file like `/etc/passwd`
+# @param user A regular expression matching the user(s) to be modified
+# @param field The field that should be modified
+# @param val The value for `field`
+#
+# **Note:** To manage local users with CFEngine 3.6 and later,
+# consider making `users` promises instead of modifying system files.
+#
+# **See also:**
+#
+# * [bundle edit_line set_escaped_user_field][lib/files.cf#set_escaped_user_field]
+# * [edit_line field_edits][field_edits]
+{
+  field_edits:
+
+      "$(user):.*"
+
+        comment => "Edit a user attribute in the password file",
+        edit_field => col(":","$(field)","$(val)","set");
+}
+
+##
+
+bundle edit_line set_escaped_user_field(user,field,val)
+# @brief Set the value of field number "field" in a `:-field`
+# formatted file like `/etc/passwd`
 # @param user The user to be modified
 # @param field The field that should be modified
 # @param val The value for `field`
 #
 # **Note:** To manage local users with CFEngine 3.6 and later,
 # consider making `users` promises instead of modifying system files.
+#
+# **See also:**
+#
+# * [bundle edit_line set_user_field][lib/files.cf#set_user_field]
+# * [edit_line field_edits][field_edits]
 {
+  vars:
+      "escaped_user"
+        string => escape( "$(user)" );
+
   field_edits:
 
-      "$(user):.*"
+      "$(escaped_user):.*"
 
-      comment => "Edit a user attribute in the password file",
-      edit_field => col(":","$(field)","$(val)","set");
+        comment => "Edit a user attribute in the password file",
+        edit_field => col(":","$(field)","$(val)","set");
 }
-
 ##
 
 bundle edit_line append_user_field(group,field,allusers)
@@ -1028,16 +1063,12 @@ bundle edit_line append_user_field(group,field,allusers)
 # **Note:** To manage local users with CFEngine 3.6 and later,
 # consider making `users` promises instead of modifying system files.
 {
-  vars:
-
-      "val" slist => { @(allusers) };
-
   field_edits:
 
       "$(group):.*"
 
       comment => "Append users into a password file format",
-      edit_field => col(":","$(field)","$(val)","alphanum");
+      edit_field => col(":","$(field)","$(allusers)","alphanum");
 }
 
 ##
@@ -1212,7 +1243,8 @@ body edit_field fstab_options(newval, method)
 body edit_field quoted_var(newval,method)
 # @brief Edit the quoted value of the matching line
 # @param newval The new value
-# @param method The method by which to edit the field
+# @param method The method by which to edit the field (append|prepend|alphanum|set|delete)
+# Ref https://docs.cfengine.com/latest/reference-promise-types-files-edit_line-field_edits.html#field_operation
 {
       field_separator => "\"";
       select_field    => "2";
@@ -1581,6 +1613,19 @@ body copy_from no_backup_cp(from)
 {
       source      => "$(from)";
       copy_backup => "false";
+}
+
+##
+
+body copy_from no_backup_cp_compare(from, comparison)
+# @brief Copy a local file (`from`) based on comparison (`comparison`) and don't make any backup of the previous version
+#
+# @param from The path to the source file.
+# @param comparison The comparison to use. (mtime|ctime|atime|exists|binary|hash|digest)
+{
+        source      => "$(from)";
+        copy_backup => "false";
+        compare => "$(comparison)";
 }
 
 ##

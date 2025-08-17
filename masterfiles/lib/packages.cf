@@ -8,16 +8,8 @@ bundle common package_module_knowledge
 {
   vars:
 
-      # Package inventory refresh
-      "query_installed_ifelapsed" -> { "CFE-2771", "CFE-3504" }
-        string => ifelse( isvariable( "def.package_module_query_installed_ifelapsed" ),
-                          "$(def.package_module_query_installed_ifelapsed)",
-                          "0"); # Always refresh local package inventory
-
-      "query_updates_ifelapsed" -> { "CFE-2771", "CFE-3504" }
-        string => ifelse( isvariable( "def.package_module_query_updates_ifelapsed" ),
-                          "$(def.package_module_query_updates_ifelapsed)",
-                          "1440"); # Refresh software updates available once a day
+    # First we set the default package manager based on the platform:
+    # TODO Refactor to use ifelse()?
 
     debian::
       "platform_default" string => "apt_get";
@@ -37,19 +29,56 @@ bundle common package_module_knowledge
     slackware::
       "platform_default" string => "slackpkg";
 
-      # CFEngine 3.12.2+ and 3.14+ have new package module on Windows
-    windows.cfengine_3_12.!(cfengine_3_12_0|cfengine_3_12_1)::
-      "platform_default" string => "msiexec";
-@if minimum_version(3.14)
     windows::
       "platform_default" string => "msiexec";
-@endif
 
     alpinelinux::
       "platform_default" string => "apk";
 
     termux::
       "platform_default" string => "apt_get";
+
+    any::
+
+      # By default, we don't want additional package managers inventoried, but
+      # we need the variable to be defined, so we initialize it to an empty
+      # list.
+
+      "additional_inventory" slist => {};
+
+      # We look to see if additional package inventory modules should be used.
+      # `default:def.additional_package_inventory_modules` is expected to be a data
+      # structure keyed with values expected to match the value of `sys.flavor`.
+
+      # For example: { "aix_7": [ "yum"], "ubuntu_20: [ "snap" ] }
+
+      # If there is additional inventory defined for the platform we want to use them
+      "additional_inventory" -> { "CFE-3612" }
+        slist => getvalues( "default:def.additional_package_inventory_modules[$(sys.flavor)]" ),
+        if => isvariable( "default:def.additional_package_inventory_modules[$(sys.flavor)]" );
+
+      # Package inventory refresh
+      "query_installed_ifelapsed" -> { "CFE-2771", "CFE-3504" }
+        string => ifelse( isvariable( "def.package_module_$(this.promiser)" ),
+                          "$(def.package_module_$(this.promiser))",
+                          "0"); # Always refresh local package inventory
+
+      "query_updates_ifelapsed" -> { "CFE-2771", "CFE-3504" }
+        string => ifelse( isvariable( "def.package_module_$(this.promiser)" ),
+                          "$(def.package_module_$(this.promiser))",
+                          "1440"); # Refresh software updates available once a day
+
+      # It's possible that a user wants to use a different default package
+      # manager. To support that we look at
+      # `default:def.default_package_module`, a data structure keyed
+      # with values expected to match the value of `sys.flavor`
+
+      "platform_default" -> { "CFE-3612" }
+        string => "$(default:def.default_package_module[$(sys.flavor)])",
+        if => isvariable( "default:def.default_package_module[$(sys.flavor)]"),
+        comment => concat( "default:def.default_package_module[$(sys.flavor)] has been defined.",
+                           "This overrides the default package manager.");
+
 }
 
 body package_module apk
@@ -1809,7 +1838,7 @@ body package_method generic
 #     "mypackage" package_method => generic, package_policy => "add";
 # ```
 {
-    suse|sles::
+    suse|sles|opensuse::
       package_changes => "bulk";
       package_list_command => "$(rpm_knowledge.call_rpm) -qa --queryformat \"$(rpm_knowledge.rpm_output_format)\"";
       # set it to "0" to avoid caching of list during upgrade
@@ -1984,12 +2013,12 @@ bundle agent package_absent(package)
       package_policy => "delete",
       package_method => yum_rpm_permissive;
 
-    suse|sles::
+    suse|sles|opensuse::
       "$(package)"
       package_policy => "delete",
       package_method => zypper;
 
-    !debian.!redhat.!(suse|sles)::
+    !debian.!redhat.!(suse|sles|opensuse)::
       "$(package)"
       package_policy => "delete",
       package_method => generic;
@@ -2021,12 +2050,12 @@ bundle agent package_present(package)
       package_policy => "add",
       package_method => yum_rpm_permissive;
 
-    suse|sles::
+    suse|sles|opensuse::
       "$(package)"
       package_policy => "add",
       package_method => zypper;
 
-    !debian.!redhat.!(suse|sles)::
+    !debian.!redhat.!(suse|sles|opensuse)::
       "$(package)"
       package_policy => "add",
       package_method => generic;
@@ -2060,13 +2089,13 @@ bundle agent package_latest(package)
       package_version => "999999999",
       package_method => yum_rpm_permissive;
 
-    suse|sles::
+    suse|sles|opensuse::
       "$(package)"
       package_policy => "addupdate",
       package_version => "999999999",
       package_method => zypper;
 
-    !debian.!redhat.!(suse|sles)::
+    !debian.!redhat.!(suse|sles|opensuse)::
       "$(package)"
       package_policy => "addupdate",
       package_method => generic;
@@ -2235,7 +2264,7 @@ bundle agent package_specific(package_name, desired, package_version, package_ar
       package_architectures => { $(package_arch) },
       package_method => yum_rpm;
 
-    suse|sles::
+    suse|sles|opensuse::
 
       "$(package_name)"
       package_policy => $(desired),
@@ -2261,13 +2290,13 @@ bundle agent package_specific(package_name, desired, package_version, package_ar
       package_version => $(package_version),
       package_method => solaris_install($(solaris_admin_file));
 
-    !filebased.!debian.!redhat.!(suse|sles)::
+    !filebased.!debian.!redhat.!(suse|sles|opensuse)::
 
       "$(package_name)"
       package_policy => $(desired),
       package_method => generic;
 
   reports:
-    "(DEBUG|DEBUG_$(this.bundle)).filebased.!(suse|sles).!debian.!redhat.!aix.!solaris_pkgadd"::
+    "(DEBUG|DEBUG_$(this.bundle)).filebased.!(suse|sles|opensuse).!debian.!redhat.!aix.!solaris_pkgadd"::
       "DEBUG $(this.bundle): sorry, can't do file-based installs on $(sys.os)";
 }

@@ -42,7 +42,7 @@ bundle agent cfe_internal_update_policy
 
       # Look for a bundle that matches what the user wants
       "found_matching_user_specified_bundle"
-        slist => bundlesmatching( "$(def.mpf_update_policy_bundle)" );
+        slist => bundlesmatching( "^$(def.mpf_update_policy_bundle)$" );
 
   methods:
 
@@ -71,18 +71,16 @@ bundle agent cfe_internal_update_policy
     inform_mode|verbose_mode|DEBUG|DEBUG_cfe_internal_update_policy::
       # Report a human readable way to understand the policy behavior
 
-      "Found user specified update bundle."
-        if => "have_user_specified_update_bundle";
-
       "User specified update bundle: $(def.mpf_update_policy_bundle)"
         if => "have_user_specified_update_bundle";
 
       "User specified update bundle MISSING! Falling back to $(default_policy_update_bundle)."
         if => and( "have_user_specified_update_bundle",
-                   "missing_user_specified_update_bundle"
-                  );
-
-
+                   "missing_user_specified_update_bundle" );
+    any::
+      "WARNING User specified update bundle '$(def.mpf_update_policy_bundle)' does not specify a namespace. Please specify a namespace, e.g. 'default:$(def.mpf_update_policy_bundle)'."
+        if => and( not(regcmp( ".*:.*", $(def.mpf_update_policy_bundle) ) ),
+                   "have_user_specified_update_bundle" );
 }
 
 bundle agent cfe_internal_setup_python_symlink(symlink_path)
@@ -90,9 +88,7 @@ bundle agent cfe_internal_setup_python_symlink(symlink_path)
 {
   vars:
       "path" string => getenv("PATH", 1024);
-      "path_folders" slist => filter("$(sys.bindir)",
-                                     splitstring("$(path)", ":", 128),
-                                     false, true, 128);
+      "path_folders" slist => splitstring("$(path)", ":", 128);
 
     windows::
       "abs_path_folders" -> {"CFE-2309"}
@@ -139,13 +135,14 @@ bundle agent cfe_internal_setup_python_symlink(symlink_path)
         move_obstructions => "true",
         if => isvariable("python");
 
-      "$(sys.bindir)/python" -> { "CFE-3512" }
+      "$(sys.bindir)/python" -> { "CFE-3512", "CFE-4146" }
         delete => u_tidy,
-        if => islink( "$(sys.bindir)/python" ),
+        if => and( islink( "$(sys.bindir)/python" ),
+                   strcmp( "$(sys.bindir)", "/var/cfengine/bin")),
         comment => concat( "We don't want to leave a python that is potentially in $PATH ",
                            "after having re-named our python symlink that is used for various ",
-                           "modules");
-
+                           "modules. Additionally we want to be cautious that we don't delete ",
+                           "system python symlinks in the event the binary was built for FHS.");
 }
 
 bundle agent cfe_internal_update_policy_cpv
@@ -204,15 +201,6 @@ bundle agent cfe_internal_update_policy_cpv
         string => "$(sys.bindir)/cfengine-selected-python",
         comment => "Symlink to Python we found (if any)",
         handle => "cfe_internal_update_policy_python_symlink";
-
-    cfredis_in_enterprise::
-
-      # TODO Remove from MPF after 3.12 EOL
-
-      "redis_conf_file" -> { "ENT-2797" }
-        string => translatepath("$(sys.workdir)/config/redis.conf"),
-        comment => "Path to Redis configuration file",
-        handle => "cfe_internal_update_policy_redis_conf_file";
 
   classes:
 
@@ -536,7 +524,8 @@ body file_select u_cf3_files
 body file_select u_input_files
 # @brief Select files by extension that we should include when updating inputs
 {
-      leaf_name => { @(update_def.input_name_patterns) };
+      leaf_name => { @(update_def.input_name_patterns),
+                     @(update_def.input_name_patterns_extra) };
       file_result => "leaf_name";
 }
 
@@ -600,6 +589,19 @@ body copy_from u_cp_missing_ok(from)
       missing_ok => "true";
 }
 
+body copy_from u_remote_dcp_missing_ok(from,server)
+# @brief Download a file from a remote server if available and if differs from the local copy.
+#
+# @param from The location of the file on the remote server
+# @param server The hostname or IP of the server from which to download
+#
+# **See Also:** `remote_dcp()`
+{
+        servers     => { "$(server)" };
+        source      => "$(from)";
+        compare     => "digest";
+        missing_ok => "true";
+}
 #########################################################
 
 body action u_immediate
@@ -791,12 +793,15 @@ bundle agent modules_presence
 #              be updated in $(sys.workdir)/modules, including any sub-directories.
 {
   vars:
-    "_vendored_dir" string => "$(this.promise_dirname)/../../modules/packages/vendored/";
-    "_override_dir" string => "$(this.promise_dirname)/../../modules/packages/";
+    "_vendored_dir" string => "$(this.promise_dirname)$(const.dirsep)..$(const.dirsep)..$(const.dirsep)modules$(const.dirsep)packages$(const.dirsep)vendored$(const.dirsep)";
+    "_override_dir" string => "$(this.promise_dirname)$(const.dirsep)..$(const.dirsep)..$(const.dirsep)modules$(const.dirsep)packages$(const.dirsep)";
+    "_custom_template_dir" string => "$(this.promise_dirname)$(const.dirsep)..$(const.dirsep)..$(const.dirsep)modules$(const.dirsep)mustache$(const.dirsep)";
     "_vendored_paths" slist => findfiles("$(_vendored_dir)*.mustache");
+    "_custom_template_paths" slist => findfiles("$(_custom_template_dir)*.mustache"), if => isdir( "$(_custom_template_dir)" );
     "_package_paths" slist => filter("$(_override_dir)vendored", _package_paths_tmp, "false", "true", 999);
+
     windows::
-      "_package_paths_tmp" slist => findfiles("\Q$(_override_dir)\E*");
+      "_package_paths_tmp" slist => findfiles("$(_override_dir)*");
       "_vendored_modules" slist => maplist(regex_replace("$(this)", "\Q$(_vendored_dir)\E(.*).mustache", "$1", "g"), @(_vendored_paths));
       "_override_modules" slist => maplist(regex_replace("$(this)", "\Q$(_override_dir)\E(.*)", "$1", "g"), @(_package_paths));
       # replace single backslashes in a windows path with double-backslashes
@@ -807,7 +812,8 @@ bundle agent modules_presence
       "_package_paths_tmp" slist => findfiles("$(_override_dir)*");
       "_vendored_modules" slist => maplist(regex_replace("$(this)", "$(_vendored_dir)(.*).mustache", "$1", "g"), @(_vendored_paths));
       "_override_modules" slist => maplist(regex_replace("$(this)", "$(_override_dir)(.*)", "$1", "g"), @(_package_paths));
-      "_not_vendored_modules_pathname_regex" string => "$(sys.inputdir)/modules/(?!packages/vendored).*";
+      "_custom_template_modules" slist => maplist(regex_replace("$(this)", "$(_custom_template_dir)(.*).mustache", "$1", "g"), @(_custom_template_paths));
+      "_not_vendored_modules_pathname_regex" string => "$(sys.inputdir)/modules/(?!(packages/vendored|mustache/)).*";
 
   classes:
     "override_vendored_module_$(_vendored_modules)" expression => fileexists("$(_override_dir)$(_vendored_modules)");
@@ -832,6 +838,14 @@ bundle agent modules_presence
         canonify("override_vendored_module_$(_override_modules)"),
         canonify("override_module_$(_override_modules)"));
 
+    "$(sys.workdir)/modules/$(_custom_template_modules)" -> { "ENT-10793" }
+        comment => "We want to render mustache templated modules",
+        handle => "cfe_internal_update_policy_files_custom_template_modules",
+        template_method => "mustache",
+        edit_template => "$(_custom_template_dir)$(_custom_template_modules).mustache",
+        perms => u_mo("500", "root"),
+        if => fileexists("$(_custom_template_dir)$(_custom_template_modules).mustache");
+
     "$(sys.workdir)/modules"
       comment => "Copy any non-packages modules",
       handle => "cfe_internal_update_policy_files_nonpackages_modules",
@@ -845,6 +859,8 @@ bundle agent modules_presence
 
   reports:
     DEBUG::
+      "_override_dir: $(_override_dir)";
+      "_package_paths_tmp: $(with)" with => storejson(_package_paths_tmp);
       "_not_vendored_modules_pathname_regex: $(_not_vendored_modules_pathname_regex)";
       "_vendored_modules: $(_vendored_modules)";
       "_override_modules: $(_override_modules)";

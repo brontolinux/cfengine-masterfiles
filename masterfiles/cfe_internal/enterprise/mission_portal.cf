@@ -164,7 +164,7 @@ bundle agent mission_portal_apache_from_stage(config, staged_config)
 
   classes:
       "systemd_supervised"
-        expression => returnszero("$(paths.systemctl) -q is-enabled cf-apache > /dev/null 2>&1", "useshell"),
+        expression => returnszero("$(paths.systemctl) -q is-active cf-apache > /dev/null 2>&1", "useshell"),
         if => fileexists( $(paths.systemctl) );
 
   vars:
@@ -188,16 +188,23 @@ bundle agent mission_portal_apache_from_stage(config, staged_config)
       comment => "Without an apache config, Mission Mortal and Enterprise API
                   services will not work";
 
-    "$(config)"
+    "$(config)"  -> { "ENT-9686" }
       copy_from => local_dcp( $(staged_config) ),
+      handle => "cfapache_httpd_conf_from_staged",
       if => and( or( "apache_stop_after_new_staged_config_repaired",
-                     not( fileexists( "$(httpd_pid_file)" ) )),
+                     not( fileexists( "$(httpd_pid_file)" ) ),
+                     isnewerthan( $(config), $(staged_config) ) ),
                  returnszero("$(validate_config) > /dev/null 2>&1 ", "useshell")),
       classes => results("bundle", "mission_portal_apache_config"),
       comment => "We make sure that the deployed config is a copy of the staged
                   config if the staged config passes a syntax check. We redirect
                   the output to keep policy runs clean and not generate lots of
                   unnecessary email.";
+
+      # Note: RPM package spec must align or the file will come up in rpm verification
+      "$(config)"  -> { "ENT-11096" }
+        handle => "cfengine_mp_apache_config_ownership_perms",
+        perms => mog( "400", "root", "root");
 
   commands:
 
@@ -219,6 +226,14 @@ bundle agent mission_portal_apache_from_stage(config, staged_config)
         contain => in_shell,
         comment => concat( "We start apache after the new valid config is in ",
                            "place only if we have stopped apache already.");
+
+      "LD_LIBRARY_PATH=$(sys.workdir)/lib:$LD_LIBRARY_PATH $(sys.workdir)/httpd/bin/apachectl" -> { "ENT-9686" }
+        args => "graceful",
+        if => and( "mission_portal_apache_config_repaired",
+                   not( "apache_stop_after_new_staged_config_repaired" ) ),
+        contain => in_shell,
+        comment => "We restart apache after the new valid config is in place";
+
   services:
     systemd_supervised::
       "cf-apache"
@@ -236,6 +251,11 @@ bundle agent mission_portal_apache_from_stage(config, staged_config)
         comment => concat( "We start apache after the new valid config is in ",
                            "place only if we have stopped apache already.");
 
+      "cf-apache" -> { "ENT-9686" }
+        service_policy => "restart",
+        if => and( "mission_portal_apache_config_repaired",
+                   not( "apache_stop_after_new_staged_config_repaired" ) ),
+        comment => "We restart apache after the new valid config is in place";
 
   reports:
     DEBUG|DEBUG_mission_portal_apache_from_stage::
